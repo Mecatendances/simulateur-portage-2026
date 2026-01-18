@@ -8,56 +8,51 @@ import base64
 if 'cfg_base_salary' not in st.session_state:
     st.session_state.cfg_base_salary = 2374.0
 if 'cfg_frais_gestion' not in st.session_state:
-    st.session_state.cfg_frais_gestion = 5.0 # En %
+    st.session_state.cfg_frais_gestion = 5.0 
 if 'cfg_taux_prime' not in st.session_state:
-    st.session_state.cfg_taux_prime = 5.0 # En %
+    st.session_state.cfg_taux_prime = 5.0 
 if 'cfg_taux_reserve' not in st.session_state:
-    st.session_state.cfg_taux_reserve = 10.0 # En %
+    st.session_state.cfg_taux_reserve = 10.0 
 if 'cfg_taux_cp' not in st.session_state:
-    st.session_state.cfg_taux_cp = 10.0 # En %
+    st.session_state.cfg_taux_cp = 10.0 
 if 'cfg_taux_pat' not in st.session_state:
-    st.session_state.cfg_taux_pat = 46.69 # En %
+    st.session_state.cfg_taux_pat = 46.69 
 if 'cfg_taux_sal' not in st.session_state:
-    st.session_state.cfg_taux_sal = 23.56 # En %
+    st.session_state.cfg_taux_sal = 23.56 
 if 'cfg_ik_rate' not in st.session_state:
-    st.session_state.cfg_ik_rate = 1.25 # €/km
+    st.session_state.cfg_ik_rate = 1.25 
 if 'cfg_pmss' not in st.session_state:
-    st.session_state.cfg_pmss = 3925.0 # PMSS 2025
+    st.session_state.cfg_pmss = 4005.0 # Valeur 2026
 if 'cfg_mutuelle_taux' not in st.session_state:
-    st.session_state.cfg_mutuelle_taux = 1.5 # % du PMSS
+    st.session_state.cfg_mutuelle_taux = 1.5 
 if 'cfg_mutuelle_part_pat' not in st.session_state:
-    st.session_state.cfg_mutuelle_part_pat = 50.0 # % Prise en charge patronale
+    st.session_state.cfg_mutuelle_part_pat = 50.0 
 if 'cfg_smic_mensuel' not in st.session_state:
-    st.session_state.cfg_smic_mensuel = 1801.80 # SMIC Mensuel Brut 2025 (estimatif)
+    st.session_state.cfg_smic_mensuel = 1823.03 # Valeur 2026
 if 'cfg_taux_pat_reduit' not in st.session_state:
-    st.session_state.cfg_taux_pat_reduit = 41.00 # Taux réduit (approx allègements)
+    st.session_state.cfg_taux_pat_reduit = 41.00 
 if 'cfg_seuil_reduit_smic' not in st.session_state:
-    st.session_state.cfg_seuil_reduit_smic = 2.5 # Multiplicateur SMIC pour le seuil réduit
+    st.session_state.cfg_seuil_reduit_smic = 2.5 
 
 # --- Moteur de Calcul ---
-
 def calculate_salary(tjm, days_worked_month, days_worked_week, 
                      ik_amount, other_expenses, use_reserve, use_mutuelle):
     
-    # Récupération des variables de configuration
     cfg_base = st.session_state.cfg_base_salary
     rate_gestion = st.session_state.cfg_frais_gestion / 100.0
     rate_prime = st.session_state.cfg_taux_prime / 100.0
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
     rate_cp = st.session_state.cfg_taux_cp / 100.0
     
-    base_rate_pat = st.session_state.cfg_taux_pat / 100.0 # Taux Standard
-    reduced_rate_pat = st.session_state.cfg_taux_pat_reduit / 100.0 # Taux Réduit
+    base_rate_pat = st.session_state.cfg_taux_pat / 100.0 
+    reduced_rate_pat = st.session_state.cfg_taux_pat_reduit / 100.0 
     rate_sal = st.session_state.cfg_taux_sal / 100.0
     
-    # Seuils SMIC
     smic = st.session_state.cfg_smic_mensuel
-    threshold_reduced = st.session_state.cfg_seuil_reduit_smic * smic # 2.5 SMIC
-    threshold_surcharge = 3.5 * smic # 3.5 SMIC
-    
+    threshold_reduced = st.session_state.cfg_seuil_reduit_smic * smic 
+    threshold_surcharge = 3.5 * smic 
     surcharge_rate = 0.018 
 
-    # Mutuelle
     pmss = st.session_state.cfg_pmss
     mutuelle_total_cost = 0.0
     mutuelle_part_pat = 0.0
@@ -70,72 +65,52 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         mutuelle_part_pat = mutuelle_total_cost * split_pat
         mutuelle_part_sal = mutuelle_total_cost * (1 - split_pat)
     
-    # 1. Chiffre d'Affaires & Frais de Gestion
     turnover = tjm * days_worked_month
     management_fees = turnover * rate_gestion
     
-    # 2. Enveloppe Globale Disponible
     budget_available = turnover - management_fees
     masse_salariale_budget = budget_available - ik_amount - other_expenses
     
-    # 3. Calcul des Éléments Fixes
     base_salary = cfg_base * (days_worked_week / 5.0)
     prime_apport = base_salary * rate_prime
     reserve_amount = (base_salary * rate_reserve) if use_reserve else 0.0
     
-    # 4. Résolution du Complément (Solver à 3 étages) 
-    
-    # Coût cible disponible pour le package salaire (Brut + Charges Pat)
     target_total_cost = masse_salariale_budget - reserve_amount - mutuelle_part_pat
     
     def solve_gross(cost, pat_rate):
         return cost / (1 + pat_rate)
     
-    # --- LOGIQUE DE DÉCISION DU TAUX ---
     rate_scenario = "Standard"
     final_rate_pat = base_rate_pat
     
-    # Essai 1 : Taux Réduit
-    # On teste si avec le taux réduit, le brut généré est bien en dessous du seuil autorisé
     gross_candidate = solve_gross(target_total_cost, reduced_rate_pat)
     
     if gross_candidate <= threshold_reduced:
-        # Scénario 1 : Taux Réduit validé
         final_rate_pat = reduced_rate_pat
         rate_scenario = "Réduit"
     else:
-        # Si on dépasse le seuil réduit, on doit appliquer au moins le taux standard
         gross_candidate = solve_gross(target_total_cost, base_rate_pat)
-        
         if gross_candidate > threshold_surcharge:
-            # Scénario 3 : Taux Majoré
-            # On recalcule avec la majoration
             final_rate_pat = base_rate_pat + surcharge_rate
             gross_candidate = solve_gross(target_total_cost, final_rate_pat)
             rate_scenario = "Majoré"
         else:
-            # Scénario 2 : Taux Standard maintenu
             final_rate_pat = base_rate_pat
             rate_scenario = "Standard"
 
-    # Base hors CP
     base_prime_complement = gross_candidate / (1 + rate_cp)
-    
     complement_remuneration = base_prime_complement - base_salary - prime_apport
     
     if complement_remuneration < 0:
         complement_remuneration = 0
     
-    # 5. Reconstruction
     indemnite_cp = (base_salary + prime_apport + complement_remuneration) * rate_cp
     gross_salary = base_salary + prime_apport + complement_remuneration + indemnite_cp
     
     employer_charges = gross_salary * final_rate_pat
     employee_charges = gross_salary * rate_sal
     
-    # Net avant impôt
     net_before_tax = gross_salary - employee_charges - mutuelle_part_sal
-    
     net_payable = net_before_tax + ik_amount + other_expenses
     
     return {
@@ -171,7 +146,6 @@ def create_pdf(data, name):
     pdf.cell(200, 10, txt=f"Simulation de Salaire - {name}", ln=1, align="C")
     pdf.ln(10)
     
-    # On récupère les taux pour l'affichage
     t_gest = st.session_state.cfg_frais_gestion
     t_ik = st.session_state.cfg_ik_rate
     
@@ -240,9 +214,9 @@ def create_pdf(data, name):
 
 # --- UI Streamlit ---
 
-st.set_page_config(page_title="Simulateur Portage Salarial 2025", layout="wide")
+st.set_page_config(page_title="Simulateur Portage Salarial 2026", layout="wide")
 
-# Sidebar : Entrées spécifiques à la simulation (Consultant)
+# Sidebar
 with st.sidebar:
     st.title("👤 Consultant")
     consultant_name = st.text_input("Nom", "Consultant")
@@ -259,7 +233,6 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Frais")
     
-    # On utilise le taux configuré pour afficher l'info
     ik_rate_display = st.session_state.cfg_ik_rate
     st.markdown(f"**Indemnités Km** ({ik_rate_display} €/km)")
     km_mensuel = st.number_input("Nb Kilomètres", value=0.0, step=10.0)
@@ -279,8 +252,7 @@ with st.sidebar:
     use_reserve = st.checkbox("Réserve Financière", value=True)
     use_mutuelle = st.checkbox("Mutuelle Santé", value=True)
 
-
-# --- CALCUL AVANT AFFICHAGE (CORRECTIF) ---
+# --- CALCUL AVANT AFFICHAGE ---
 results = calculate_salary(tjm, days_worked_month, days_worked_week, 
                            ik_total, expenses_other, use_reserve, use_mutuelle)
 
@@ -288,6 +260,7 @@ results = calculate_salary(tjm, days_worked_month, days_worked_week,
 tab_simu, tab_config, tab_comm = st.tabs(["📊 Résultats Simulation", "⚙️ Configuration Globale", "📧 Email & Explications"])
 
 with tab_simu:
+    st.title("📊 Simulateur de Portage Salarial 2026")
     # KPIs
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     with kpi1:
@@ -347,7 +320,8 @@ with tab_simu:
         df_disp = pd.DataFrame(data_lines, columns=["Libellé", "Montant", "Type"])
         
         st.dataframe(
-            df_disp[df_disp["Type"] != "Empty"][["Libellé", "Montant"]].style.format({"Montant": "{:,.2f} €"}),
+            df_disp[df_disp["Type"] != "Empty"](["Libellé", "Montant"])
+            .style.format({"Montant": "{:,.2f} €"}),
             use_container_width=True,
             hide_index=True,
             height=600
@@ -468,9 +442,8 @@ with tab_comm:
     
     with c_expl:
         st.header("📘 Comprendre le calcul")
-        st.markdown("Voici l'explication détaillée étape par étape pour cette simulation précise :")
+        st.markdown("Voici l'explication détaillée étape par étape pour cette simulation précise (Barème 2026) :")
         
-        # Texte pour la réserve
         txt_reserve_expl = ""
         if use_reserve and results['reserve_amount'] > 0:
             txt_reserve_expl = f"""
@@ -503,9 +476,8 @@ with tab_comm:
 
     with c_mail:
         st.header("📧 Email type pour le consultant")
-        st.markdown("Copiez ce texte pour accompagner l'envoi du PDF.")
+        st.markdown("Copiez ce texte pour accompagner l'envoi du PDF (Données 2026).")
         
-        # Construction du texte dynamique
         txt_frais = ""
         if results['total_expenses'] > 0:
             txt_frais = f"\n*   Le remboursement de vos frais professionnels pour **{results['total_expenses']:,.2f} €** (non imposables)."
@@ -540,7 +512,7 @@ Ce montant comprend :
 
 Les points clés de cette simulation :{txt_mutuelle}{txt_reserve_mail}{txt_opti}
 ✅ **Sécurité :** Cotisations complètes (Chômage, Retraite Cadre, Sécurité Sociale).
-✅ **Transparence :** Tout est détaillé dans le PDF ci-joint.
+✅ **Transparence :** Tout est détaillé dans le PDF ci-joint (Barèmes 2026).
 
 Je reste à votre disposition pour affiner ces chiffres ou pour préparer votre contrat.
 

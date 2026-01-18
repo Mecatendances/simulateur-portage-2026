@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Présentation Méthodologie 2026</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --secondary: #1e40af;
+            --accent: #ef4444;
+            --success: #10b981;
+            --bg: #f8fafc;
+            --text: #1e293b;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            overflow: hidden;
+        }
+
+        .slides-container {
+            height: 100vh;
+            width: 100vw;
+            position: relative;
+        }
+
+        .slide {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            visibility: hidden;
+            transition: all 0.6s ease-in-out;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 2rem;
+            box-sizing: border-box;
+            transform: translateY(20px);
+        }
+
+        .slide.active {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
+        h1 {
+            font-size: 3.5rem;
+            margin-bottom: 1rem;
+            color: var(--secondary);
+            text-align: center;
+        }
+
+        h2 {
+            font-size: 2.5rem;
+            color: var(--primary);
+            margin-bottom: 2rem;
+        }
+
+        h3 {
+            font-size: 1.5rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .content {
+            max-width: 900px;
+            font-size: 1.5rem;
+            line-height: 1.6;
+            text-align: center;
+        }
+
+        .highlight {
+            color: var(--primary);
+            font-weight: bold;
+        }
+
+        .bad {
+            color: var(--accent);
+            font-weight: bold;
+        }
+
+        .good {
+            color: var(--success);
+            font-weight: bold;
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 30px;
+            width: 100%;
+            max-width: 1100px;
+        }
+
+        .card {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            text-align: left;
+        }
+
+        .card h4 {
+            font-size: 1.25rem;
+            margin-top: 0;
+            color: var(--secondary);
+        }
+
+        .nav-buttons {
+            position: absolute;
+            bottom: 30px;
+            right: 30px;
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        button:hover {
+            background: var(--secondary);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .progress-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            height: 5px;
+            background: var(--primary);
+            transition: width 0.3s;
+        }
+
+        code {
+            background: #e2e8f0;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+
+<div class="slides-container">
+    <div class="progress-bar" id="progress"></div>
+
+    <!-- Slide 1: Accueil -->
+    <div class="slide active">
+        <h3>Simulateur de Portage Salarial</h3>
+        <h1>Modernisation 2026</h1>
+        <div class="content">
+            <p>Du fichier Excel complexe à une application Web intelligente.</p>
+            <p style="font-size: 1.2rem; color: #666; margin-top: 2rem;">Barèmes officiels Janvier 2026 • SMIC 1 823,03 € • PMSS 4 005 €</p>
+        </div>
+    </div>
+
+    <!-- Slide 2: Le Problème -->
+    <div class="slide">
+        <h3>L'existant</h3>
+        <h2>📉 Pourquoi changer ?</h2>
+        <div class="content">
+            <p>L'ancien fichier Excel reposait sur une formule statique de <span class="bad">38 "SI" imbriqués</span>.</p>
+            <ul style="text-align: left; margin: 0 auto; display: inline-block;">
+                <li>❌ <strong>Maintenance impossible :</strong> Difficile à mettre à jour pour 2026.</li>
+                <li>❌ <strong>Approximation :</strong> Les taux étaient figés en "escalier" et non calculés.</li>
+                <li>❌ <strong>Risque d'erreur :</strong> Pas de contrôle automatique des seuils légaux.</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Slide 3: La Méthode -->
+    <div class="slide">
+        <h3>Nouvelle Méthodologie</h3>
+        <h2>🔄 Le "Reverse Engineering"</h2>
+        <div class="content">
+            <p>En portage, on part du CA pour trouver le salaire.</p>
+            <div style="background: white; padding: 20px; border-radius: 10px; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1); margin-top: 20px;">
+                CA (Facturation) <br>
+                ⬇️ <br>
+                <strong>Masse Disponible</strong> (après frais gestion & pro) <br>
+                ⬇️ <br>
+                <span class="highlight">ALGORITHME SOLVER</span> <br>
+                ⬇️ <br>
+                Salaire Brut Optimisé
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 4: Les Charges -->
+    <div class="slide">
+        <h3>Cœur du système</h3>
+        <h2>🧠 Gestion Intelligente des Charges</h2>
+        <p>Le simulateur détecte automatiquement le bon scénario :</p>
+        <div class="card-grid">
+            <div class="card" style="border-top: 5px solid #10b981;">
+                <h4>🟢 Taux Réduit</h4>
+                <p><strong>< 2,5 SMIC</strong></p>
+                <p>Application des allègements généraux (Fillon) et taux maladie réduit.</p>
+                <p class="good">~41,00 %</p>
+            </div>
+            <div class="card" style="border-top: 5px solid #3b82f6;">
+                <h4>🔵 Taux Standard</h4>
+                <p><strong>Standard</strong></p>
+                <p>Zone de salaire classique en portage salarial.</p>
+                <p class="highlight">~46,69 %</p>
+            </div>
+            <div class="card" style="border-top: 5px solid #ef4444;">
+                <h4>🔴 Taux Majoré</h4>
+                <p><strong>> 3,5 SMIC</strong></p>
+                <p>Application de la contribution d'équilibre sur la totalité.</p>
+                <p class="bad">~48,49 %</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Slide 5: 2026 -->
+    <div class="slide">
+        <h3>Mise à jour légale</h3>
+        <h2>📅 Données Officielles 2026</h2>
+        <div class="content">
+            <table style="width: 100%; border-collapse: collapse; margin-top: 20px;">
+                <tr style="border-bottom: 1px solid #ddd;">
+                    <td style="padding: 15px; text-align: left;">SMIC Mensuel Brut</td>
+                    <td style="padding: 15px; text-align: right; font-weight: bold;">1 823,03 €</td>
+                </tr>
+                <tr style="border-bottom: 1px solid #ddd;">
+                    <td style="padding: 15px; text-align: left;">Plafond Sécu (PMSS)</td>
+                    <td style="padding: 15px; text-align: right; font-weight: bold;">4 005,00 €</td>
+                </tr>
+                <tr>
+                    <td style="padding: 15px; text-align: left;">Indemnités Km (Cat. C)</td>
+                    <td style="padding: 15px; text-align: right; font-weight: bold;">1,25 € / km</td>
+                </tr>
+            </table>
+            <p style="margin-top: 40px; font-size: 1.2rem;">✅ Le simulateur est prêt et déployé.</p>
+        </div>
+    </div>
+
+    <div class="nav-buttons">
+        <button id="prevBtn" onclick="changeSlide(-1)">Précédent</button>
+        <button id="nextBtn" onclick="changeSlide(1)">Suivant</button>
+    </div>
+</div>
+
+<script>
+    let currentSlide = 0;
+    const slides = document.querySelectorAll('.slide');
+    const progress = document.getElementById('progress');
+    const prevBtn = document.getElementById('prevBtn');
+    const nextBtn = document.getElementById('nextBtn');
+
+    function updateSlides() {
+        slides.forEach((slide, index) => {
+            slide.classList.remove('active');
+            if (index === currentSlide) {
+                slide.classList.add('active');
+            }
+        });
+
+        // Update buttons
+        prevBtn.disabled = currentSlide === 0;
+        nextBtn.disabled = currentSlide === slides.length - 1;
+        if (currentSlide === slides.length - 1) {
+            nextBtn.textContent = "Fin";
+        } else {
+            nextBtn.textContent = "Suivant";
+        }
+
+        // Update progress bar
+        const percentage = ((currentSlide + 1) / slides.length) * 100;
+        progress.style.width = percentage + '%';
+    }
+
+    function changeSlide(direction) {
+        currentSlide += direction;
+        if (currentSlide < 0) currentSlide = 0;
+        if (currentSlide >= slides.length) currentSlide = slides.length - 1;
+        updateSlides();
+    }
+
+    // Keyboard navigation
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === 'Space') changeSlide(1);
+        if (e.key === 'ArrowLeft') changeSlide(-1);
+    });
+
+    updateSlides();
+</script>
+
+</body>
+</html>

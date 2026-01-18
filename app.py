@@ -28,21 +28,36 @@ if 'cfg_mutuelle_taux' not in st.session_state:
     st.session_state.cfg_mutuelle_taux = 1.5 # % du PMSS
 if 'cfg_mutuelle_part_pat' not in st.session_state:
     st.session_state.cfg_mutuelle_part_pat = 50.0 # % Prise en charge patronale
+if 'cfg_smic_mensuel' not in st.session_state:
+    st.session_state.cfg_smic_mensuel = 1801.80 # SMIC Mensuel Brut 2025 (estimatif)
+if 'cfg_taux_pat_reduit' not in st.session_state:
+    st.session_state.cfg_taux_pat_reduit = 41.00 # Taux réduit (approx allègements)
+if 'cfg_seuil_reduit_smic' not in st.session_state:
+    st.session_state.cfg_seuil_reduit_smic = 2.5 # Multiplicateur SMIC pour le seuil réduit
 
 # --- Moteur de Calcul ---
 
 def calculate_salary(tjm, days_worked_month, days_worked_week, 
                      ik_amount, other_expenses, use_reserve, use_mutuelle):
     
-    # Récupération des variables de configuration depuis le state
+    # Récupération des variables de configuration
     cfg_base = st.session_state.cfg_base_salary
     rate_gestion = st.session_state.cfg_frais_gestion / 100.0
     rate_prime = st.session_state.cfg_taux_prime / 100.0
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
     rate_cp = st.session_state.cfg_taux_cp / 100.0
-    rate_pat = st.session_state.cfg_taux_pat / 100.0
+    
+    base_rate_pat = st.session_state.cfg_taux_pat / 100.0 # Taux Standard
+    reduced_rate_pat = st.session_state.cfg_taux_pat_reduit / 100.0 # Taux Réduit
     rate_sal = st.session_state.cfg_taux_sal / 100.0
     
+    # Seuils SMIC
+    smic = st.session_state.cfg_smic_mensuel
+    threshold_reduced = st.session_state.cfg_seuil_reduit_smic * smic # 2.5 SMIC
+    threshold_surcharge = 3.5 * smic # 3.5 SMIC
+    
+    surcharge_rate = 0.018 
+
     # Mutuelle
     pmss = st.session_state.cfg_pmss
     mutuelle_total_cost = 0.0
@@ -52,7 +67,6 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     if use_mutuelle:
         mutuelle_rate = st.session_state.cfg_mutuelle_taux / 100.0
         split_pat = st.session_state.cfg_mutuelle_part_pat / 100.0
-        
         mutuelle_total_cost = pmss * mutuelle_rate
         mutuelle_part_pat = mutuelle_total_cost * split_pat
         mutuelle_part_sal = mutuelle_total_cost * (1 - split_pat)
@@ -66,25 +80,47 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     masse_salariale_budget = budget_available - ik_amount - other_expenses
     
     # 3. Calcul des Éléments Fixes
-    # Proratisation temps partiel hebdo (Base 5 jours)
     base_salary = cfg_base * (days_worked_week / 5.0)
-    
     prime_apport = base_salary * rate_prime
-    
-    # Réserve financière
     reserve_amount = (base_salary * rate_reserve) if use_reserve else 0.0
     
-    # 4. Résolution du Complément
-    # Masse_Dispo - Reserve - Mutuelle_Patronale = Brut_Total * (1 + Pat)
-    # Brut_Total = (Base + Prime + Complément) * (1 + Taux_CP)
+    # 4. Résolution du Complément (Solver à 3 étages)
     
-    # On déduit le coût fixe patronal de la mutuelle de l'enveloppe
+    # Coût cible disponible pour le package salaire (Brut + Charges Pat)
     target_total_cost = masse_salariale_budget - reserve_amount - mutuelle_part_pat
     
-    target_gross_salary = target_total_cost / (1 + rate_pat)
+    def solve_gross(cost, pat_rate):
+        return cost / (1 + pat_rate)
     
+    # --- LOGIQUE DE DÉCISION DU TAUX ---
+    rate_scenario = "Standard"
+    final_rate_pat = base_rate_pat
+    
+    # Essai 1 : Taux Réduit
+    # On teste si avec le taux réduit, le brut généré est bien en dessous du seuil autorisé
+    gross_candidate = solve_gross(target_total_cost, reduced_rate_pat)
+    
+    if gross_candidate <= threshold_reduced:
+        # Scénario 1 : Taux Réduit validé
+        final_rate_pat = reduced_rate_pat
+        rate_scenario = "Réduit"
+    else:
+        # Si on dépasse le seuil réduit, on doit appliquer au moins le taux standard
+        gross_candidate = solve_gross(target_total_cost, base_rate_pat)
+        
+        if gross_candidate > threshold_surcharge:
+            # Scénario 3 : Taux Majoré
+            # On recalcule avec la majoration
+            final_rate_pat = base_rate_pat + surcharge_rate
+            gross_candidate = solve_gross(target_total_cost, final_rate_pat)
+            rate_scenario = "Majoré"
+        else:
+            # Scénario 2 : Taux Standard maintenu
+            final_rate_pat = base_rate_pat
+            rate_scenario = "Standard"
+
     # Base hors CP
-    base_prime_complement = target_gross_salary / (1 + rate_cp)
+    base_prime_complement = gross_candidate / (1 + rate_cp)
     
     complement_remuneration = base_prime_complement - base_salary - prime_apport
     
@@ -95,10 +131,10 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     indemnite_cp = (base_salary + prime_apport + complement_remuneration) * rate_cp
     gross_salary = base_salary + prime_apport + complement_remuneration + indemnite_cp
     
-    employer_charges = gross_salary * rate_pat
+    employer_charges = gross_salary * final_rate_pat
     employee_charges = gross_salary * rate_sal
     
-    # Net avant impôt = Brut - Charges Salariales - Mutuelle Salariale
+    # Net avant impôt
     net_before_tax = gross_salary - employee_charges - mutuelle_part_sal
     
     net_payable = net_before_tax + ik_amount + other_expenses
@@ -122,7 +158,9 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "mutuelle_part_pat": mutuelle_part_pat,
         "mutuelle_part_sal": mutuelle_part_sal,
         "net_before_tax": net_before_tax,
-        "net_payable": net_payable
+        "net_payable": net_payable,
+        "rate_scenario": rate_scenario,
+        "rate_pat_applied": final_rate_pat
     }
 
 # --- PDF Generation ---
@@ -282,6 +320,31 @@ with tab_config:
             value=st.session_state.cfg_taux_sal, format="%.2f", step=0.05
         )
         st.divider()
+        st.markdown("#### Seuils & Bascule")
+        st.session_state.cfg_smic_mensuel = st.number_input(
+            "SMIC Mensuel Brut (€)", 
+            value=st.session_state.cfg_smic_mensuel, step=10.0
+        )
+        st.session_state.cfg_taux_pat_reduit = st.number_input(
+            "Taux Patronal Réduit (%)", 
+            value=st.session_state.cfg_taux_pat_reduit, step=0.5
+        )
+        st.session_state.cfg_seuil_reduit_smic = st.number_input(
+            "Seuil Taux Réduit (x SMIC)", 
+            value=st.session_state.cfg_seuil_reduit_smic, step=0.1
+        )
+        
+        limit_reduit = st.session_state.cfg_smic_mensuel * st.session_state.cfg_seuil_reduit_smic
+        limit_majore = st.session_state.cfg_smic_mensuel * 3.5
+        
+        st.info(f"""
+        **Paliers actuels :**
+        🟢 < {limit_reduit:,.0f} € : Taux Réduit ({st.session_state.cfg_taux_pat_reduit}%)
+        🔵 {limit_reduit:,.0f} - {limit_majore:,.0f} € : Standard ({st.session_state.cfg_taux_pat}%)
+        🔴 > {limit_majore:,.0f} € : Majoré ({st.session_state.cfg_taux_pat + 1.8:.2f}%)
+        """)
+        
+        st.divider()
         st.session_state.cfg_pmss = st.number_input(
             "Plafond Sécu (PMSS) (€)", 
             value=st.session_state.cfg_pmss, step=100.0
@@ -338,6 +401,17 @@ with tab_simu:
         txt_gest = f"Frais de gestion ({st.session_state.cfg_frais_gestion}%)"
         txt_ik = f"Indemnités Kilométriques ({st.session_state.cfg_ik_rate} €/km)"
         
+        # Libellé dynamique pour les charges patronales
+        rate_pat_txt = f"{results['rate_pat_applied']*100:.2f}%"
+        scenario = results.get('rate_scenario', 'Standard')
+        
+        if scenario == "Réduit":
+            rate_pat_txt += " (Réduit - Bas salaire)"
+        elif scenario == "Majoré":
+            rate_pat_txt += " (Majoré > 3.5 SMIC)"
+        
+        txt_pat = f"Charges Patronales ({rate_pat_txt})"
+
         data_lines = [
             ("Chiffre d'affaires (CA)", results['turnover'], "Positif"),
             (txt_gest, -results['management_fees'], "Negatif"),
@@ -353,7 +427,7 @@ with tab_simu:
             ("", 0, "Empty"),
             ("Réserve Financière", -results['reserve_amount'], "Negatif"),
             ("Mutuelle Part Patronale", -results['mutuelle_part_pat'], "Negatif"),
-            ("Charges Patronales", -results['employer_charges'], "Negatif"),
+            (txt_pat, -results['employer_charges'], "Negatif"),
             ("Charges Salariales", -results['employee_charges'], "Negatif"),
             ("Mutuelle Part Salariale", -results['mutuelle_part_sal'], "Negatif"),
             ("= NET AVANT IMPÔT", results['net_before_tax'], "Total"),

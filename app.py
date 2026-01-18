@@ -282,7 +282,81 @@ with st.sidebar:
 
 
 # Main : Onglets
-tab_simu, tab_config = st.tabs(["📊 Résultats Simulation", "⚙️ Configuration Globale"])
+tab_simu, tab_config, tab_comm = st.tabs(["📊 Résultats Simulation", "⚙️ Configuration Globale", "📧 Email & Explications"])
+
+with tab_comm:
+    c_expl, c_mail = st.columns(2)
+    
+    with c_expl:
+        st.header("📘 Comprendre le calcul")
+        st.markdown("Voici l'explication détaillée étape par étape pour cette simulation précise :")
+        
+        st.info(f"""
+        **1. Le Point de Départ (CA)**
+        Nous partons de votre facturation HT : **{results['turnover']:,.2f} €**.
+        
+        **2. L'Enveloppe Disponible**
+        Nous déduisons les frais de gestion ({st.session_state.cfg_frais_gestion}%) et vos frais professionnels ({results['total_expenses']:,.2f} €) qui vous sont remboursés directement.
+        👉 Il reste **{results['masse_salariale_budget']:,.2f} €** pour financer votre salaire (la "Masse Salariale").
+        
+        **3. La Transformation en Brut**
+        Cette masse paie deux choses :
+        *   Les Charges Patronales (**{results['employer_charges']:,.2f} €**) versées à l'URSSAF/Retraite.
+        *   Votre Salaire Brut (**{results['gross_salary']:,.2f} €**).
+        
+        *{'✅ Note : Grâce au niveau de votre rémunération, vous bénéficiez d\'un taux de charges réduit (allègements bas salaires).' if results.get('rate_scenario') == 'Réduit' else ''}*
+        
+        **4. Le Net à Payer**
+        Sur le Brut, nous prélevons les charges salariales et la mutuelle.
+        Nous rajoutons ensuite vos frais (non imposables).
+        
+        💰 **Net à Payer = Net Social + Frais = {results['net_payable']:,.2f} €**
+        """)
+
+    with c_mail:
+        st.header("📧 Email type pour le consultant")
+        st.markdown("Copiez ce texte pour accompagner l'envoi du PDF.")
+        
+        # Construction du texte dynamique
+        txt_frais = ""
+        if results['total_expenses'] > 0:
+            txt_frais = f"\n*   Le remboursement de vos frais professionnels pour **{results['total_expenses']:,.2f} €** (non imposables)."
+        
+        txt_mutuelle = ""
+        if use_mutuelle:
+            txt_mutuelle = "\n✅ **Santé :** Mutuelle d'entreprise incluse (prise en charge à 50%)."
+            
+        txt_opti = ""
+        if results.get('rate_scenario') == 'Réduit':
+            txt_opti = "\n✅ **Optimisation :** Cette simulation intègre les allègements de charges sociales en vigueur pour maximiser votre net."
+        elif results.get('rate_scenario') == 'Majoré':
+             txt_opti = "\nℹ️ **Information :** Ce calcul prend en compte les taux spécifiques applicables aux tranches de rémunération élevées."
+
+        email_content = f"""Objet : Votre simulation de revenus - TJM {tjm}€
+
+Bonjour {consultant_name},
+
+Suite à nos échanges, j'ai le plaisir de vous transmettre votre simulation de salaire personnalisée, basée sur un TJM de {tjm} € et {days_worked_month} jours d'activité.
+
+Voici la synthèse de votre projection pour ce mois :
+
+💰 VOTRE NET À PAYER ESTIMÉ : {results['net_payable']:,.2f} €
+(Montant viré sur votre compte bancaire)
+
+Ce montant comprend :
+*   Votre Salaire Net (après déduction de toutes les charges sociales).{txt_frais}
+
+Les points clés de cette simulation :{txt_mutuelle}{txt_opti}
+✅ **Sécurité :** Cotisations complètes (Chômage, Retraite Cadre, Sécurité Sociale).
+✅ **Transparence :** Tout est détaillé dans le PDF ci-joint.
+
+Je reste à votre disposition pour affiner ces chiffres ou pour préparer votre contrat.
+
+Bien cordialement,
+
+L'équipe Portage"""
+
+        st.text_area("Sujet & Corps du message", email_content, height=450)
 
 with tab_config:
     st.header("Paramètres Globaux de Calcul")

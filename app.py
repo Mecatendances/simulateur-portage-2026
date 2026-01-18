@@ -470,22 +470,31 @@ with tab_comm:
         st.header("📘 Comprendre le calcul")
         st.markdown("Voici l'explication détaillée étape par étape pour cette simulation précise :")
         
+        # Texte pour la réserve
+        txt_reserve_expl = ""
+        if use_reserve and results['reserve_amount'] > 0:
+            txt_reserve_expl = f"""
+            **3. La Réserve Financière (Épargne)**
+            Nous mettons de côté **{results['reserve_amount']:,.2f} €** (10% du salaire de base).
+            *Cet argent reste à vous ! Il sert à financer vos périodes d'intercontrat ou est versé en fin de contrat.*
+            """
+        
         st.info(f"""
         **1. Le Point de Départ (CA)**
         Nous partons de votre facturation HT : **{results['turnover']:,.2f} €**.
         
         **2. L'Enveloppe Disponible**
-        Nous déduisons les frais de gestion ({st.session_state.cfg_frais_gestion}%) et vos frais professionnels ({results['total_expenses']:,.2f} €) qui vous sont remboursés directement.
-        👉 Il reste **{results['masse_salariale_budget']:,.2f} €** pour financer votre salaire (la "Masse Salariale").
-        
-        **3. La Transformation en Brut**
-        Cette masse paie deux choses :
-        *   Les Charges Patronales (**{results['employer_charges']:,.2f} €**) versées à l'URSSAF/Retraite.
+        Nous déduisons les frais de gestion ({st.session_state.cfg_frais_gestion}%) et vos frais professionnels ({results['total_expenses']:,.2f} €).
+        👉 Il reste **{results['masse_salariale_budget']:,.2f} €** (Masse Salariale).
+        {txt_reserve_expl}
+        **4. La Transformation en Brut**
+        Le reste de l'enveloppe finance :
+        *   Les Charges Patronales (**{results['employer_charges']:,.2f} €**).
         *   Votre Salaire Brut (**{results['gross_salary']:,.2f} €**).
         
         *{'✅ Note : Grâce au niveau de votre rémunération, vous bénéficiez d\'un taux de charges réduit (allègements bas salaires).' if results.get('rate_scenario') == 'Réduit' else ''}*
         
-        **4. Le Net à Payer**
+        **5. Le Net à Payer**
         Sur le Brut, nous prélevons les charges salariales et la mutuelle.
         Nous rajoutons ensuite vos frais (non imposables).
         
@@ -504,6 +513,10 @@ with tab_comm:
         txt_mutuelle = ""
         if use_mutuelle:
             txt_mutuelle = "\n✅ **Santé :** Mutuelle d'entreprise incluse (prise en charge à 50%)."
+        
+        txt_reserve_mail = ""
+        if use_reserve and results['reserve_amount'] > 0:
+            txt_reserve_mail = f"\n✅ **Épargne :** Une réserve financière de **{results['reserve_amount']:,.2f} €** est constituée ce mois-ci (disponible en fin de contrat)."
             
         txt_opti = ""
         if results.get('rate_scenario') == 'Réduit':
@@ -525,7 +538,7 @@ Voici la synthèse de votre projection pour ce mois :
 Ce montant comprend :
 *   Votre Salaire Net (après déduction de toutes les charges sociales).{txt_frais}
 
-Les points clés de cette simulation :{txt_mutuelle}{txt_opti}
+Les points clés de cette simulation :{txt_mutuelle}{txt_reserve_mail}{txt_opti}
 ✅ **Sécurité :** Cotisations complètes (Chômage, Retraite Cadre, Sécurité Sociale).
 ✅ **Transparence :** Tout est détaillé dans le PDF ci-joint.
 

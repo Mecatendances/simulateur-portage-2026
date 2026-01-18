@@ -13,7 +13,7 @@ Ce simulateur est un outil interactif permettant de calculer le revenu net d'un 
 ## 🛠 Installation
 
 ```bash
-git clone https://github.com/Mecatendances/simulateur-portage-2025.git
+git clone https://github.com/Mecatendances/simulateur-portage-2026.git
 pip install -r requirements.txt
 streamlit run app.py
 ```

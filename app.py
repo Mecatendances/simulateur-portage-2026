@@ -5,7 +5,6 @@ from fpdf import FPDF
 import base64
 
 # --- Initialisation des Variables (Session State) ---
-# On définit les valeurs par défaut seulement si elles n'existent pas encore
 if 'cfg_base_salary' not in st.session_state:
     st.session_state.cfg_base_salary = 2374.0
 if 'cfg_frais_gestion' not in st.session_state:
@@ -84,7 +83,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     prime_apport = base_salary * rate_prime
     reserve_amount = (base_salary * rate_reserve) if use_reserve else 0.0
     
-    # 4. Résolution du Complément (Solver à 3 étages)
+    # 4. Résolution du Complément (Solver à 3 étages) 
     
     # Coût cible disponible pour le package salaire (Brut + Charges Pat)
     target_total_cost = masse_salariale_budget - reserve_amount - mutuelle_part_pat
@@ -281,82 +280,98 @@ with st.sidebar:
     use_mutuelle = st.checkbox("Mutuelle Santé", value=True)
 
 
+# --- CALCUL AVANT AFFICHAGE (CORRECTIF) ---
+results = calculate_salary(tjm, days_worked_month, days_worked_week, 
+                           ik_total, expenses_other, use_reserve, use_mutuelle)
+
 # Main : Onglets
 tab_simu, tab_config, tab_comm = st.tabs(["📊 Résultats Simulation", "⚙️ Configuration Globale", "📧 Email & Explications"])
 
-with tab_comm:
-    c_expl, c_mail = st.columns(2)
-    
-    with c_expl:
-        st.header("📘 Comprendre le calcul")
-        st.markdown("Voici l'explication détaillée étape par étape pour cette simulation précise :")
+with tab_simu:
+    # KPIs
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    with kpi1:
+        st.metric("Chiffre d'Affaires", f"{results['turnover']:,.2f} €")
+    with kpi2:
+        st.metric("Salaire Brut", f"{results['gross_salary']:,.2f} €")
+    with kpi3:
+        total_charges = results['employer_charges'] + results['employee_charges'] + results['mutuelle_part_pat'] + results['mutuelle_part_sal']
+        st.metric("Charges Totales", f"{total_charges:,.2f} €")
+    with kpi4:
+        st.metric("NET À PAYER", f"{results['net_payable']:,.2f} €", delta="Virement")
+
+    st.divider()
+
+    col_main, col_viz = st.columns([2, 1])
+
+    with col_main:
+        st.subheader("Détail du Bulletin")
         
-        st.info(f"""
-        **1. Le Point de Départ (CA)**
-        Nous partons de votre facturation HT : **{results['turnover']:,.2f} €**.
+        txt_gest = f"Frais de gestion ({st.session_state.cfg_frais_gestion}%)"
+        txt_ik = f"Indemnités Kilométriques ({st.session_state.cfg_ik_rate} €/km)"
         
-        **2. L'Enveloppe Disponible**
-        Nous déduisons les frais de gestion ({st.session_state.cfg_frais_gestion}%) et vos frais professionnels ({results['total_expenses']:,.2f} €) qui vous sont remboursés directement.
-        👉 Il reste **{results['masse_salariale_budget']:,.2f} €** pour financer votre salaire (la "Masse Salariale").
+        rate_pat_txt = f"{results['rate_pat_applied']*100:.2f}%"
+        scenario = results.get('rate_scenario', 'Standard')
         
-        **3. La Transformation en Brut**
-        Cette masse paie deux choses :
-        *   Les Charges Patronales (**{results['employer_charges']:,.2f} €**) versées à l'URSSAF/Retraite.
-        *   Votre Salaire Brut (**{results['gross_salary']:,.2f} €**).
+        if scenario == "Réduit":
+            rate_pat_txt += " (Réduit - Bas salaire)"
+        elif scenario == "Majoré":
+            rate_pat_txt += " (Majoré > 3.5 SMIC)"
         
-        *{'✅ Note : Grâce au niveau de votre rémunération, vous bénéficiez d\'un taux de charges réduit (allègements bas salaires).' if results.get('rate_scenario') == 'Réduit' else ''}*
+        txt_pat = f"Charges Patronales ({rate_pat_txt})"
+
+        data_lines = [
+            ("Chiffre d'affaires (CA)", results['turnover'], "Positif"),
+            (txt_gest, -results['management_fees'], "Negatif"),
+            (txt_ik, -results['ik_amount'], "Neutre"),
+            ("Autres Frais", -results['other_expenses'], "Neutre"),
+            ("= MASSE SALARIALE DISPONIBLE", results['masse_salariale_budget'], "Total"),
+            ("", 0, "Empty"),
+            ("Salaire de Base", results['base_salary'], "Detail"),
+            ("Prime d'apport d'affaires", results['prime_apport'], "Detail"),
+            ("Complément de rémunération", results['complement_remuneration'], "Detail"),
+            ("Indemnité Congés Payés", results['indemnite_cp'], "Detail"),
+            ("= TOTAL BRUT", results['gross_salary'], "Total"),
+            ("", 0, "Empty"),
+            ("Réserve Financière", -results['reserve_amount'], "Negatif"),
+            ("Mutuelle Part Patronale", -results['mutuelle_part_pat'], "Negatif"),
+            (txt_pat, -results['employer_charges'], "Negatif"),
+            ("Charges Salariales", -results['employee_charges'], "Negatif"),
+            ("Mutuelle Part Salariale", -results['mutuelle_part_sal'], "Negatif"),
+            ("= NET AVANT IMPÔT", results['net_before_tax'], "Total"),
+            ("", 0, "Empty"),
+            ("Remboursement Frais", results['total_expenses'], "Positif"),
+            ("= NET À PAYER", results['net_payable'], "Final")
+        ]
         
-        **4. Le Net à Payer**
-        Sur le Brut, nous prélevons les charges salariales et la mutuelle.
-        Nous rajoutons ensuite vos frais (non imposables).
+        df_disp = pd.DataFrame(data_lines, columns=["Libellé", "Montant", "Type"])
         
-        💰 **Net à Payer = Net Social + Frais = {results['net_payable']:,.2f} €**
-        """)
+        st.dataframe(
+            df_disp[df_disp["Type"] != "Empty"][["Libellé", "Montant"]].style.format({"Montant": "{:,.2f} €"}),
+            use_container_width=True,
+            hide_index=True,
+            height=600
+        )
 
-    with c_mail:
-        st.header("📧 Email type pour le consultant")
-        st.markdown("Copiez ce texte pour accompagner l'envoi du PDF.")
+    with col_viz:
+        st.subheader("Répartition")
+        labels = ['Net Avant Impôt', 'Charges Sociales', 'Mutuelle', 'Frais Gestion', 'Réserve']
+        values = [results['net_before_tax'], 
+                  results['employee_charges'] + results['employer_charges'],
+                  results['mutuelle_part_pat'] + results['mutuelle_part_sal'],
+                  results['management_fees'], results['reserve_amount']]
         
-        # Construction du texte dynamique
-        txt_frais = ""
-        if results['total_expenses'] > 0:
-            txt_frais = f"\n*   Le remboursement de vos frais professionnels pour **{results['total_expenses']:,.2f} €** (non imposables)."
+        fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4)])
+        fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+        st.plotly_chart(fig, use_container_width=True)
         
-        txt_mutuelle = ""
-        if use_mutuelle:
-            txt_mutuelle = "\n✅ **Santé :** Mutuelle d'entreprise incluse (prise en charge à 50%)."
-            
-        txt_opti = ""
-        if results.get('rate_scenario') == 'Réduit':
-            txt_opti = "\n✅ **Optimisation :** Cette simulation intègre les allègements de charges sociales en vigueur pour maximiser votre net."
-        elif results.get('rate_scenario') == 'Majoré':
-             txt_opti = "\nℹ️ **Information :** Ce calcul prend en compte les taux spécifiques applicables aux tranches de rémunération élevées."
-
-        email_content = f"""Objet : Votre simulation de revenus - TJM {tjm}€
-
-Bonjour {consultant_name},
-
-Suite à nos échanges, j'ai le plaisir de vous transmettre votre simulation de salaire personnalisée, basée sur un TJM de {tjm} € et {days_worked_month} jours d'activité.
-
-Voici la synthèse de votre projection pour ce mois :
-
-💰 VOTRE NET À PAYER ESTIMÉ : {results['net_payable']:,.2f} €
-(Montant viré sur votre compte bancaire)
-
-Ce montant comprend :
-*   Votre Salaire Net (après déduction de toutes les charges sociales).{txt_frais}
-
-Les points clés de cette simulation :{txt_mutuelle}{txt_opti}
-✅ **Sécurité :** Cotisations complètes (Chômage, Retraite Cadre, Sécurité Sociale).
-✅ **Transparence :** Tout est détaillé dans le PDF ci-joint.
-
-Je reste à votre disposition pour affiner ces chiffres ou pour préparer votre contrat.
-
-Bien cordialement,
-
-L'équipe Portage"""
-
-        st.text_area("Sujet & Corps du message", email_content, height=450)
+        st.markdown("### Export")
+        pdf_bytes = create_pdf(results, consultant_name)
+        b64 = base64.b64encode(pdf_bytes).decode()
+        href = f'<a href="data:application/octet-stream;base64,{b64}" download="simulation_{consultant_name}.pdf" style="text-decoration:none;">'
+               f'<button style="width:100%; padding: 10px; background-color: #FF4B4B; color: white; border: none; border-radius: 5px; cursor: pointer;">'
+               f'📄 Télécharger le PDF</button></a>'
+        st.markdown(href, unsafe_allow_html=True)
 
 with tab_config:
     st.header("Paramètres Globaux de Calcul")
@@ -446,95 +461,76 @@ with tab_config:
     
     st.success("Les modifications sont prises en compte automatiquement dans l'onglet 'Résultats'.")
 
-with tab_simu:
-    # Calcul avec les valeurs dynamiques
-    results = calculate_salary(tjm, days_worked_month, days_worked_week, 
-                               ik_total, expenses_other, use_reserve, use_mutuelle)
+with tab_comm:
+    c_expl, c_mail = st.columns(2)
+    
+    with c_expl:
+        st.header("📘 Comprendre le calcul")
+        st.markdown("Voici l'explication détaillée étape par étape pour cette simulation précise :")
+        
+        st.info(f"""
+        **1. Le Point de Départ (CA)**
+        Nous partons de votre facturation HT : **{results['turnover']:,.2f} €**.
+        
+        **2. L'Enveloppe Disponible**
+        Nous déduisons les frais de gestion ({st.session_state.cfg_frais_gestion}%) et vos frais professionnels ({results['total_expenses']:,.2f} €) qui vous sont remboursés directement.
+        👉 Il reste **{results['masse_salariale_budget']:,.2f} €** pour financer votre salaire (la "Masse Salariale").
+        
+        **3. La Transformation en Brut**
+        Cette masse paie deux choses :
+        *   Les Charges Patronales (**{results['employer_charges']:,.2f} €**) versées à l'URSSAF/Retraite.
+        *   Votre Salaire Brut (**{results['gross_salary']:,.2f} €**).
+        
+        *{'✅ Note : Grâce au niveau de votre rémunération, vous bénéficiez d\'un taux de charges réduit (allègements bas salaires).' if results.get('rate_scenario') == 'Réduit' else ''}*
+        
+        **4. Le Net à Payer**
+        Sur le Brut, nous prélevons les charges salariales et la mutuelle.
+        Nous rajoutons ensuite vos frais (non imposables).
+        
+        💰 **Net à Payer = Net Social + Frais = {results['net_payable']:,.2f} €**
+        """)
 
-    # KPIs
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    with kpi1:
-        st.metric("Chiffre d'Affaires", f"{results['turnover']:,.2f} €")
-    with kpi2:
-        st.metric("Salaire Brut", f"{results['gross_salary']:,.2f} €")
-    with kpi3:
-        total_charges = results['employer_charges'] + results['employee_charges'] + results['mutuelle_part_pat'] + results['mutuelle_part_sal']
-        st.metric("Charges Totales (+Mutuelle)", f"{total_charges:,.2f} €")
-    with kpi4:
-        st.metric("NET À PAYER", f"{results['net_payable']:,.2f} €", delta="Virement")
+    with c_mail:
+        st.header("📧 Email type pour le consultant")
+        st.markdown("Copiez ce texte pour accompagner l'envoi du PDF.")
+        
+        # Construction du texte dynamique
+        txt_frais = ""
+        if results['total_expenses'] > 0:
+            txt_frais = f"\n*   Le remboursement de vos frais professionnels pour **{results['total_expenses']:,.2f} €** (non imposables)."
+        
+        txt_mutuelle = ""
+        if use_mutuelle:
+            txt_mutuelle = "\n✅ **Santé :** Mutuelle d'entreprise incluse (prise en charge à 50%)."
+            
+        txt_opti = ""
+        if results.get('rate_scenario') == 'Réduit':
+            txt_opti = "\n✅ **Optimisation :** Cette simulation intègre les allègements de charges sociales en vigueur pour maximiser votre net."
+        elif results.get('rate_scenario') == 'Majoré':
+             txt_opti = "\nℹ️ **Information :** Ce calcul prend en compte les taux spécifiques applicables aux tranches de rémunération élevées."
 
-    st.divider()
+        email_content = f"""Objet : Votre simulation de revenus - TJM {tjm}€
 
-    # Tableau et Graphique
-    col_main, col_viz = st.columns([2, 1])
+Bonjour {consultant_name},
 
-    with col_main:
-        st.subheader("Détail du Bulletin")
-        
-        # Récupération des taux pour affichage dans le tableau
-        txt_gest = f"Frais de gestion ({st.session_state.cfg_frais_gestion}%)"
-        txt_ik = f"Indemnités Kilométriques ({st.session_state.cfg_ik_rate} €/km)"
-        
-        # Libellé dynamique pour les charges patronales
-        rate_pat_txt = f"{results['rate_pat_applied']*100:.2f}%"
-        scenario = results.get('rate_scenario', 'Standard')
-        
-        if scenario == "Réduit":
-            rate_pat_txt += " (Réduit - Bas salaire)"
-        elif scenario == "Majoré":
-            rate_pat_txt += " (Majoré > 3.5 SMIC)"
-        
-        txt_pat = f"Charges Patronales ({rate_pat_txt})"
+Suite à nos échanges, j'ai le plaisir de vous transmettre votre simulation de salaire personnalisée, basée sur un TJM de {tjm} € et {days_worked_month} jours d'activité.
 
-        data_lines = [
-            ("Chiffre d'affaires (CA)", results['turnover'], "Positif"),
-            (txt_gest, -results['management_fees'], "Negatif"),
-            (txt_ik, -results['ik_amount'], "Neutre"),
-            ("Autres Frais", -results['other_expenses'], "Neutre"),
-            ("= MASSE SALARIALE DISPONIBLE", results['masse_salariale_budget'], "Total"),
-            ("", 0, "Empty"),
-            ("Salaire de Base", results['base_salary'], "Detail"),
-            ("Prime d'apport d'affaires", results['prime_apport'], "Detail"),
-            ("Complément de rémunération", results['complement_remuneration'], "Detail"),
-            ("Indemnité Congés Payés", results['indemnite_cp'], "Detail"),
-            ("= TOTAL BRUT", results['gross_salary'], "Total"),
-            ("", 0, "Empty"),
-            ("Réserve Financière", -results['reserve_amount'], "Negatif"),
-            ("Mutuelle Part Patronale", -results['mutuelle_part_pat'], "Negatif"),
-            (txt_pat, -results['employer_charges'], "Negatif"),
-            ("Charges Salariales", -results['employee_charges'], "Negatif"),
-            ("Mutuelle Part Salariale", -results['mutuelle_part_sal'], "Negatif"),
-            ("= NET AVANT IMPÔT", results['net_before_tax'], "Total"),
-            ("", 0, "Empty"),
-            ("Remboursement Frais", results['total_expenses'], "Positif"),
-            ("= NET À PAYER", results['net_payable'], "Final")
-        ]
-        
-        df_disp = pd.DataFrame(data_lines, columns=["Libellé", "Montant", "Type"])
-        
-        st.dataframe(
-            df_disp[df_disp["Type"] != "Empty"][["Libellé", "Montant"]].style.format({"Montant": "{:,.2f} €"}),
-            use_container_width=True,
-            hide_index=True,
-            height=600
-        )
+Voici la synthèse de votre projection pour ce mois :
 
-    with col_viz:
-        st.subheader("Répartition")
-        labels = ['Net Avant Impôt', 'Charges Sociales', 'Mutuelle', 'Frais Gestion', 'Réserve']
-        values = [results['net_before_tax'], 
-                  results['employee_charges'] + results['employer_charges'],
-                  results['mutuelle_part_pat'] + results['mutuelle_part_sal'],
-                  results['management_fees'], results['reserve_amount']]
-        
-        fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4)])
-        fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown("### Export")
-        pdf_bytes = create_pdf(results, consultant_name)
-        b64 = base64.b64encode(pdf_bytes).decode()
-        href = f'<a href="data:application/octet-stream;base64,{b64}" download="simulation_{consultant_name}.pdf" style="text-decoration:none;">' \
-               f'<button style="width:100%; padding: 10px; background-color: #FF4B4B; color: white; border: none; border-radius: 5px; cursor: pointer;">' \
-               f'📄 Télécharger le PDF</button></a>'
-        st.markdown(href, unsafe_allow_html=True)
+💰 VOTRE NET À PAYER ESTIMÉ : {results['net_payable']:,.2f} €
+(Montant viré sur votre compte bancaire)
+
+Ce montant comprend :
+*   Votre Salaire Net (après déduction de toutes les charges sociales).{txt_frais}
+
+Les points clés de cette simulation :{txt_mutuelle}{txt_opti}
+✅ **Sécurité :** Cotisations complètes (Chômage, Retraite Cadre, Sécurité Sociale).
+✅ **Transparence :** Tout est détaillé dans le PDF ci-joint.
+
+Je reste à votre disposition pour affiner ces chiffres ou pour préparer votre contrat.
+
+Bien cordialement,
+
+L'équipe Portage"""
+
+        st.text_area("Sujet & Corps du message", email_content, height=450)

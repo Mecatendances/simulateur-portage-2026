@@ -465,7 +465,7 @@ with tab_comm:
         *   Les Charges Patronales (**{results['employer_charges']:,.2f} €**).
         *   Votre Salaire Brut (**{results['gross_salary']:,.2f} €**).
         
-        *{'✅ Note : Grâce au niveau de votre rémunération, vous bénéficiez d\'un taux de charges réduit (allègements bas salaires).' if results.get('rate_scenario') == 'Réduit' else ''}*
+        *{"✅ Note : Grâce au niveau de votre rémunération, vous bénéficiez d'un taux de charges réduit (allègements bas salaires)." if results.get('rate_scenario') == 'Réduit' else ""}*
         
         **5. Le Net à Payer**
         Sur le Brut, nous prélevons les charges salariales et la mutuelle.

@@ -320,7 +320,7 @@ with tab_simu:
         df_disp = pd.DataFrame(data_lines, columns=["Libellé", "Montant", "Type"])
         
         st.dataframe(
-            df_disp[df_disp["Type"] != "Empty"](["Libellé", "Montant"])
+            df_disp[df_disp["Type"] != "Empty"][["Libellé", "Montant"]]
             .style.format({"Montant": "{:,.2f} €"}),
             use_container_width=True,
             hide_index=True,

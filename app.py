@@ -66,15 +66,19 @@ if 'cfg_seuil_maladie_smic' not in st.session_state:
 if 'cfg_seuil_af_smic' not in st.session_state:
     st.session_state.cfg_seuil_af_smic = 3.3 
 
+# --- Constantes Forfait Teletravail ---
+TELETRAVAIL_TAUX_JOUR = 2.70  # EUR par jour
+TELETRAVAIL_MAX_JOURS = 22    # Maximum 22 jours
+
 # --- Moteur de Calcul ---
 def calculate_salary(tjm, days_worked_month, days_worked_week,
                      ik_amount, igd_amount, other_expenses, use_reserve, use_mutuelle,
-                     nb_titres_restaurant=0, frais_intermediation_pct=0.0):
+                     nb_titres_restaurant=0, frais_intermediation_pct=0.0,
+                     jours_teletravail=0):
 
     cfg_base = st.session_state.cfg_base_salary
     rate_gestion = st.session_state.cfg_frais_gestion / 100.0
     rate_prime = st.session_state.cfg_taux_prime / 100.0
-    rate_reserve = st.session_state.cfg_taux_reserve / 100.0
     rate_cp = st.session_state.cfg_taux_cp / 100.0
 
     base_rate_pat = st.session_state.cfg_taux_pat / 100.0
@@ -83,8 +87,6 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
 
     smic = st.session_state.cfg_smic_mensuel
     threshold_reduced = st.session_state.cfg_seuil_reduit_smic * smic
-    threshold_maladie = st.session_state.cfg_seuil_maladie_smic * smic  # Seuil complement maladie 2.25 SMIC
-    threshold_af = st.session_state.cfg_seuil_af_smic * smic  # Seuil allocations familiales 3.3 SMIC
 
     pmss = st.session_state.cfg_pmss
     mutuelle_total_cost = 0.0
@@ -102,6 +104,10 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     tr_part_sal = nb_titres_restaurant * TR_PART_PATRONALE_MAX  # 7.18 EUR
     tr_part_pat = nb_titres_restaurant * TR_PART_PATRONALE_MAX  # 7.18 EUR
 
+    # Forfait teletravail (2.70 EUR/jour, max 22 jours)
+    jours_teletravail_effectifs = min(jours_teletravail, TELETRAVAIL_MAX_JOURS)
+    forfait_teletravail = jours_teletravail_effectifs * TELETRAVAIL_TAUX_JOUR
+
     turnover = tjm * days_worked_month
     management_fees = turnover * rate_gestion
     frais_intermediation = turnover * (frais_intermediation_pct / 100.0)
@@ -109,18 +115,15 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     # Montant disponible (apres frais de gestion et intermediation)
     montant_disponible = turnover - management_fees - frais_intermediation
 
-    # Total des frais rembourses
-    total_frais_rembourses = ik_amount + igd_amount + other_expenses
-
-    # Budget masse salariale
-    masse_salariale_budget = montant_disponible - total_frais_rembourses
+    # Total des frais rembourses (IK + IGD + Teletravail + Autres)
+    total_frais_rembourses = ik_amount + igd_amount + forfait_teletravail + other_expenses
 
     base_salary = cfg_base * (days_worked_week / 5.0)
     prime_apport = base_salary * rate_prime
-    reserve_amount = (base_salary * rate_reserve) if use_reserve else 0.0
 
-    # Cout mutuelle et TR a integrer
-    target_total_cost = masse_salariale_budget - reserve_amount - mutuelle_part_pat - tr_part_pat
+    # Budget pour calculer le brut : Montant disponible - Frais
+    # On resout : Brut x (1 + taux_pat) = Budget disponible pour masse salariale
+    budget_masse_salariale = montant_disponible - total_frais_rembourses
 
     def solve_gross(cost, pat_rate):
         return cost / (1 + pat_rate)
@@ -128,13 +131,13 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     rate_scenario = "Standard"
     final_rate_pat = base_rate_pat
 
-    gross_candidate = solve_gross(target_total_cost, reduced_rate_pat)
+    gross_candidate = solve_gross(budget_masse_salariale, reduced_rate_pat)
 
     if gross_candidate <= threshold_reduced:
         final_rate_pat = reduced_rate_pat
-        rate_scenario = "Réduit"
+        rate_scenario = "Reduit"
     else:
-        gross_candidate = solve_gross(target_total_cost, base_rate_pat)
+        gross_candidate = solve_gross(budget_masse_salariale, base_rate_pat)
         final_rate_pat = base_rate_pat
         rate_scenario = "Standard"
 
@@ -152,24 +155,33 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     indemnite_cp = (base_salary + prime_apport + complement_remuneration + complement_apport_affaires) * rate_cp
     gross_salary = base_salary + prime_apport + complement_remuneration + complement_apport_affaires + indemnite_cp
 
-    # Calcul charges patronales de base (cotisations sociales)
-    base_employer_charges = gross_salary * final_rate_pat
-
-    # Cotisation paritarisme (0.016% du brut)
+    # Calcul charges patronales
+    # = Cotisations sociales (brut x taux) + Mutuelle pat + TR pat + Paritarisme
+    cotisations_sociales = gross_salary * final_rate_pat
     cotisation_paritarisme = gross_salary * 0.00016
+    employer_charges = cotisations_sociales + mutuelle_part_pat + tr_part_pat + cotisation_paritarisme
 
-    # Total charges patronales = cotisations sociales + mutuelle pat + TR pat + paritarisme
-    employer_charges = base_employer_charges + mutuelle_part_pat + tr_part_pat + cotisation_paritarisme
-
-    # Charges salariales (incluant retenue TR)
+    # Charges salariales = Brut x taux_sal + Mutuelle sal + TR sal
     employee_charges_base = gross_salary * rate_sal
-    employee_charges = employee_charges_base + tr_part_sal
+    employee_charges = employee_charges_base + mutuelle_part_sal + tr_part_sal
 
-    # Cout global sans reserve
-    cout_global_sans_reserve = gross_salary + employer_charges + mutuelle_part_pat + tr_part_pat + total_frais_rembourses
+    # COUT GLOBAL SANS RESERVE = BRUT + CHARGES PATRONALES + TOTAL FRAIS
+    cout_global_sans_reserve = gross_salary + employer_charges + total_frais_rembourses
 
-    net_before_tax = gross_salary - employee_charges_base - mutuelle_part_sal
-    net_payable = net_before_tax + total_frais_rembourses - tr_part_sal
+    # RESERVE = MONTANT DISPONIBLE - COUT GLOBAL SANS RESERVE
+    reserve_amount = montant_disponible - cout_global_sans_reserve
+    if reserve_amount < 0:
+        reserve_amount = 0
+
+    # Si use_reserve = False, on reintegre la reserve (pas de provisionnement)
+    if not use_reserve:
+        reserve_amount = 0
+
+    # NET AVANT IMPOT = BRUT - CHARGES SALARIALES + TOTAL FRAIS
+    net_before_tax = gross_salary - employee_charges + total_frais_rembourses
+
+    # NET A PAYER = NET AVANT IMPOT (deja inclus les frais)
+    net_payable = net_before_tax
 
     return {
         "turnover": turnover,
@@ -178,9 +190,10 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "montant_disponible": montant_disponible,
         "ik_amount": ik_amount,
         "igd_amount": igd_amount,
+        "forfait_teletravail": forfait_teletravail,
+        "jours_teletravail": jours_teletravail_effectifs,
         "other_expenses": other_expenses,
         "total_frais_rembourses": total_frais_rembourses,
-        "masse_salariale_budget": masse_salariale_budget,
         "base_salary": base_salary,
         "prime_apport": prime_apport,
         "complement_remuneration": complement_remuneration,
@@ -189,7 +202,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "gross_salary": gross_salary,
         "reserve_amount": reserve_amount,
         "employer_charges": employer_charges,
-        "base_employer_charges": base_employer_charges,
+        "cotisations_sociales": cotisations_sociales,
         "cotisation_paritarisme": cotisation_paritarisme,
         "employee_charges": employee_charges,
         "employee_charges_base": employee_charges_base,
@@ -202,9 +215,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "net_before_tax": net_before_tax,
         "net_payable": net_payable,
         "rate_scenario": rate_scenario,
-        "rate_pat_applied": final_rate_pat,
-        "threshold_maladie": threshold_maladie,
-        "threshold_af": threshold_af
+        "rate_pat_applied": final_rate_pat
     }
 
 # --- PDF Generation ---
@@ -403,13 +414,19 @@ with st.sidebar:
         st.caption(f"Part patronale : {nb_titres_restaurant} x {TR_PART_PATRONALE_MAX:.2f} = {nb_titres_restaurant * TR_PART_PATRONALE_MAX:.2f} EUR")
 
     st.markdown("---")
+    st.subheader("Forfait Teletravail")
+    jours_teletravail = st.number_input("Nb jours teletravail", value=0, step=1, min_value=0, max_value=22,
+                                        help="2.70 EUR/jour, max 22 jours")
+    if jours_teletravail > 0:
+        st.caption(f"Forfait : {jours_teletravail} x 2.70 = {jours_teletravail * 2.70:.2f} EUR")
+
+    st.markdown("---")
     st.subheader("Autres Frais")
-    frais_teletravail = st.number_input("Forfait Teletravail (EUR)", value=0.0, step=10.0)
     frais_internet = st.number_input("Internet / Telephone (EUR)", value=0.0, step=10.0)
     frais_transport = st.number_input("Transports (Navigo...) (EUR)", value=0.0, step=10.0)
     frais_divers = st.number_input("Autres Frais (EUR)", value=0.0, step=10.0)
 
-    expenses_other = frais_teletravail + frais_internet + frais_transport + frais_divers
+    expenses_other = frais_internet + frais_transport + frais_divers
     st.caption(f"Total Autres Frais : {expenses_other:,.2f} EUR")
 
     st.markdown("---")
@@ -423,7 +440,7 @@ with st.sidebar:
 # --- CALCUL AVANT AFFICHAGE ---
 results = calculate_salary(tjm, days_worked_month, days_worked_week,
                            ik_total, igd_total, expenses_other, use_reserve, use_mutuelle,
-                           nb_titres_restaurant, frais_intermediation_pct)
+                           nb_titres_restaurant, frais_intermediation_pct, jours_teletravail)
 
 # Main : Onglets
 tab_simu, tab_config, tab_comm = st.tabs(["📊 Résultats Simulation", "⚙️ Configuration Globale", "📧 Email & Explications"])
@@ -437,7 +454,7 @@ with tab_simu:
     with kpi2:
         st.metric("Salaire Brut", f"{results['gross_salary']:,.2f} EUR")
     with kpi3:
-        total_charges = results['employer_charges'] + results['employee_charges_base'] + results['mutuelle_part_pat'] + results['mutuelle_part_sal']
+        total_charges = results['employer_charges'] + results['employee_charges']
         st.metric("Charges Totales", f"{total_charges:,.2f} EUR")
     with kpi4:
         st.metric("NET A PAYER", f"{results['net_payable']:,.2f} EUR", delta="Virement")
@@ -493,38 +510,37 @@ with tab_simu:
             data_lines.append(("Titres Restaurant Part Patronale", results['tr_part_pat'], "Detail"))
 
         # Charges patronales avec detail
-        data_lines.append((txt_pat_base, results['base_employer_charges'], "Detail"))
+        data_lines.append((f"Cotisations Sociales ({rate_pat_txt})", results['cotisations_sociales'], "Detail"))
         data_lines.append((f"+ Cotisation Paritarisme (0.016%)", results['cotisation_paritarisme'], "Detail"))
         data_lines.append(("= Total Charges Patronales", results['employer_charges'], "Total"))
+        data_lines.append(("", 0, "Empty"))
+
+        # Frais rembourses (detail)
+        data_lines.append(("--- Frais Rembourses ---", 0, "Empty"))
+        if results['ik_amount'] > 0:
+            data_lines.append((f"Indemnites Km ({st.session_state.cfg_ik_rate:.3f} EUR/km)", results['ik_amount'], "Detail"))
+        if results['igd_amount'] > 0:
+            data_lines.append(("Indemnites Grand Deplacement (IGD)", results['igd_amount'], "Detail"))
+        if results.get('forfait_teletravail', 0) > 0:
+            data_lines.append((f"Forfait Teletravail ({results['jours_teletravail']}j x 2.70)", results['forfait_teletravail'], "Detail"))
+        if results['other_expenses'] > 0:
+            data_lines.append(("Autres Frais", results['other_expenses'], "Detail"))
+        data_lines.append(("= Total Frais Rembourses", results['total_frais_rembourses'], "Total"))
         data_lines.append(("", 0, "Empty"))
 
         data_lines.append(("= COUT GLOBAL SANS RESERVE", results['cout_global_sans_reserve'], "Total"))
         data_lines.append(("", 0, "Empty"))
 
+        # Charges salariales
         data_lines.append((f"Charges Salariales ({st.session_state.cfg_taux_sal}%)", -results['employee_charges_base'], "Negatif"))
         data_lines.append(("Mutuelle Part Salariale", -results['mutuelle_part_sal'], "Negatif"))
-
         if results['tr_part_sal'] > 0:
             data_lines.append(("Titres Restaurant Part Salariale", -results['tr_part_sal'], "Negatif"))
-
-        data_lines.append(("= NET AVANT IMPOT", results['net_before_tax'], "Total"))
+        data_lines.append(("= Total Charges Salariales", -results['employee_charges'], "Total"))
         data_lines.append(("", 0, "Empty"))
 
-        # Frais rembourses
-        if results['ik_amount'] > 0:
-            data_lines.append((f"Indemnites Km ({st.session_state.cfg_ik_rate:.3f} EUR/km)", results['ik_amount'], "Positif"))
-
-        if results['igd_amount'] > 0:
-            data_lines.append(("Indemnites Grand Deplacement (IGD)", results['igd_amount'], "Positif"))
-
-        if results['other_expenses'] > 0:
-            data_lines.append(("Autres Frais", results['other_expenses'], "Positif"))
-
-        if results['total_frais_rembourses'] > 0:
-            data_lines.append(("= Total Frais Rembourses", results['total_frais_rembourses'], "Total"))
-
-        data_lines.append(("", 0, "Empty"))
-        data_lines.append(("= NET A PAYER", results['net_payable'], "Final"))
+        # NET AVANT IMPOT = BRUT - CHARGES SAL + TOTAL FRAIS
+        data_lines.append(("= NET AVANT IMPOT", results['net_before_tax'], "Final"))
 
         df_disp = pd.DataFrame(data_lines, columns=["Libelle", "Montant", "Type"])
 
@@ -709,7 +725,7 @@ with tab_comm:
         # Section 4 - Charges patronales
         st.markdown("### 4. Les Charges Patronales (detail)")
         scenario = results.get('rate_scenario', 'Standard')
-        txt_charges_pat = f"- Cotisations sociales ({scenario} {results['rate_pat_applied']*100:.2f}%) : **{results['base_employer_charges']:,.2f} EUR**"
+        txt_charges_pat = f"- Cotisations sociales ({scenario} {results['rate_pat_applied']*100:.2f}%) : **{results['cotisations_sociales']:,.2f} EUR**"
         txt_charges_pat += f"\n- + Mutuelle part patronale : **{results['mutuelle_part_pat']:,.2f} EUR**"
         if results['tr_part_pat'] > 0:
             txt_charges_pat += f"\n- + Titres Restaurant part patronale : **{results['tr_part_pat']:,.2f} EUR**"
@@ -717,45 +733,54 @@ with tab_comm:
         txt_charges_pat += f"\n\n= **Total Charges Patronales : {results['employer_charges']:,.2f} EUR**"
         st.markdown(txt_charges_pat)
 
-        # Section 5 - Reserve
+        # Section 5 - Frais rembourses
+        st.markdown("### 5. Les Frais Rembourses (non imposables)")
+        txt_frais = ""
+        if results['ik_amount'] > 0:
+            txt_frais += f"- IK selon bareme URSSAF ({st.session_state.cfg_ik_rate:.3f} EUR/km) : **{results['ik_amount']:,.2f} EUR**\n"
+        if results['igd_amount'] > 0:
+            txt_frais += f"- IGD (repas + nuitees) : **{results['igd_amount']:,.2f} EUR**\n"
+        if results.get('forfait_teletravail', 0) > 0:
+            txt_frais += f"- Forfait Teletravail ({results['jours_teletravail']}j x 2.70) : **{results['forfait_teletravail']:,.2f} EUR**\n"
+        if results['other_expenses'] > 0:
+            txt_frais += f"- Autres frais : **{results['other_expenses']:,.2f} EUR**\n"
+        txt_frais += f"\n= **Total Frais Rembourses : {results['total_frais_rembourses']:,.2f} EUR**"
+        st.markdown(txt_frais)
+
+        # Section 6 - Cout global
+        st.markdown("### 6. Le Cout Global Sans Reserve")
+        st.markdown(f"""
+**COUT GLOBAL SANS RESERVE = BRUT + CHARGES PATRONALES + TOTAL FRAIS**
+
+= {results['gross_salary']:,.2f} + {results['employer_charges']:,.2f} + {results['total_frais_rembourses']:,.2f} = **{results['cout_global_sans_reserve']:,.2f} EUR**
+        """)
+
+        # Section 7 - Reserve
         if use_reserve and results['reserve_amount'] > 0:
-            st.markdown("### 5. La Reserve Financiere")
+            st.markdown("### 7. La Reserve Financiere Provisionnee")
             st.markdown(f"""
-Montant provisionne (epargne securite) : **{results['reserve_amount']:,.2f} EUR** (10% du salaire de base)
+**RESERVE = MONTANT DISPONIBLE - COUT GLOBAL SANS RESERVE**
+
+= {results['montant_disponible']:,.2f} - {results['cout_global_sans_reserve']:,.2f} = **{results['reserve_amount']:,.2f} EUR**
 
 *Cet argent reste a vous ! Il sert a financer vos periodes d'intercontrat ou est verse en fin de contrat.*
             """)
 
-        # Section 6 - Cout global
-        st.markdown("### 6. Le Cout Global Sans Reserve")
-        st.markdown(f"= Brut + Charges Patronales + Frais = **{results['cout_global_sans_reserve']:,.2f} EUR**")
-
-        # Section 7 - Charges salariales
-        st.markdown("### 7. Les Charges Salariales")
-        txt_charges_sal = f"- Taux {st.session_state.cfg_taux_sal}% sur le brut : **{results['employee_charges_base']:,.2f} EUR**"
+        # Section 8 - Charges salariales
+        st.markdown("### 8. Les Charges Salariales")
+        txt_charges_sal = f"- Cotisations ({st.session_state.cfg_taux_sal}% sur le brut) : **{results['employee_charges_base']:,.2f} EUR**"
+        txt_charges_sal += f"\n- + Mutuelle part salariale : **{results['mutuelle_part_sal']:,.2f} EUR**"
         if results['tr_part_sal'] > 0:
-            txt_charges_sal += f"\n- Titres Restaurant (retenue part salariale) : **{results['tr_part_sal']:,.2f} EUR**"
+            txt_charges_sal += f"\n- + Titres Restaurant part salariale : **{results['tr_part_sal']:,.2f} EUR**"
+        txt_charges_sal += f"\n\n= **Total Charges Salariales : {results['employee_charges']:,.2f} EUR**"
         st.markdown(txt_charges_sal)
 
-        # Section 8 - Frais rembourses
-        if results['total_frais_rembourses'] > 0:
-            st.markdown("### 8. Les Frais Rembourses (non imposables)")
-            txt_frais = ""
-            if results['ik_amount'] > 0:
-                txt_frais += f"- IK selon bareme URSSAF ({st.session_state.cfg_ik_rate:.3f} EUR/km) : **{results['ik_amount']:,.2f} EUR**\n"
-            if results['igd_amount'] > 0:
-                txt_frais += f"- IGD (repas + nuitees) : **{results['igd_amount']:,.2f} EUR**\n"
-            if results['other_expenses'] > 0:
-                txt_frais += f"- Autres frais : **{results['other_expenses']:,.2f} EUR**\n"
-            txt_frais += f"\n= **Total Frais Rembourses : {results['total_frais_rembourses']:,.2f} EUR**"
-            st.markdown(txt_frais)
-
         # Section 9 - Net final
-        st.markdown("### 9. Le Net Final")
+        st.markdown("### 9. Le Net Avant Impot")
         st.success(f"""
-**Net Avant Impot** = Brut - Charges Salariales = **{results['net_before_tax']:,.2f} EUR**
+**NET AVANT IMPOT = BRUT - CHARGES SALARIALES + TOTAL FRAIS**
 
-**Net a Payer** = Net Avant Impot + Frais Rembourses = **{results['net_payable']:,.2f} EUR**
+= {results['gross_salary']:,.2f} - {results['employee_charges']:,.2f} + {results['total_frais_rembourses']:,.2f} = **{results['net_before_tax']:,.2f} EUR**
         """)
 
     with c_mail:

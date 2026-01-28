@@ -152,17 +152,14 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     indemnite_cp = (base_salary + prime_apport + complement_remuneration + complement_apport_affaires) * rate_cp
     gross_salary = base_salary + prime_apport + complement_remuneration + complement_apport_affaires + indemnite_cp
 
-    # Calcul charges patronales de base
+    # Calcul charges patronales de base (cotisations sociales)
     base_employer_charges = gross_salary * final_rate_pat
 
-    # Complement maladie 6% si brut > 2.25 SMIC
-    complement_maladie = gross_salary * 0.06 if gross_salary > threshold_maladie else 0.0
+    # Cotisation paritarisme (0.016% du brut)
+    cotisation_paritarisme = gross_salary * 0.00016
 
-    # Complement AF 1.8% si brut > 3.3 SMIC
-    complement_af = gross_salary * 0.018 if gross_salary > threshold_af else 0.0
-
-    # Total charges patronales
-    employer_charges = base_employer_charges + complement_maladie + complement_af
+    # Total charges patronales = cotisations sociales + mutuelle pat + TR pat + paritarisme
+    employer_charges = base_employer_charges + mutuelle_part_pat + tr_part_pat + cotisation_paritarisme
 
     # Charges salariales (incluant retenue TR)
     employee_charges_base = gross_salary * rate_sal
@@ -193,8 +190,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "reserve_amount": reserve_amount,
         "employer_charges": employer_charges,
         "base_employer_charges": base_employer_charges,
-        "complement_maladie": complement_maladie,
-        "complement_af": complement_af,
+        "cotisation_paritarisme": cotisation_paritarisme,
         "employee_charges": employee_charges,
         "employee_charges_base": employee_charges_base,
         "mutuelle_part_pat": mutuelle_part_pat,
@@ -498,13 +494,7 @@ with tab_simu:
 
         # Charges patronales avec detail
         data_lines.append((txt_pat_base, results['base_employer_charges'], "Detail"))
-
-        if results['complement_maladie'] > 0:
-            data_lines.append((f"+ Complement Maladie 6% (brut > {results['threshold_maladie']:,.0f} EUR)", results['complement_maladie'], "Detail"))
-
-        if results['complement_af'] > 0:
-            data_lines.append((f"+ Complement AF 1.8% (brut > {results['threshold_af']:,.0f} EUR)", results['complement_af'], "Detail"))
-
+        data_lines.append((f"+ Cotisation Paritarisme (0.016%)", results['cotisation_paritarisme'], "Detail"))
         data_lines.append(("= Total Charges Patronales", results['employer_charges'], "Total"))
         data_lines.append(("", 0, "Empty"))
 
@@ -719,18 +709,11 @@ with tab_comm:
         # Section 4 - Charges patronales
         st.markdown("### 4. Les Charges Patronales (detail)")
         scenario = results.get('rate_scenario', 'Standard')
-        txt_charges_pat = f"- Taux de base ({scenario}) : {results['rate_pat_applied']*100:.2f}% = **{results['base_employer_charges']:,.2f} EUR**"
-
-        if results['complement_maladie'] > 0:
-            txt_charges_pat += f"\n- + Complement Maladie 6% (brut > {results['threshold_maladie']:,.0f} EUR) : **{results['complement_maladie']:,.2f} EUR**"
-        else:
-            txt_charges_pat += f"\n- Complement Maladie : Non applicable (brut <= {results['threshold_maladie']:,.0f} EUR)"
-
-        if results['complement_af'] > 0:
-            txt_charges_pat += f"\n- + Complement AF 1.8% (brut > {results['threshold_af']:,.0f} EUR) : **{results['complement_af']:,.2f} EUR**"
-        else:
-            txt_charges_pat += f"\n- Complement AF : Non applicable (brut <= {results['threshold_af']:,.0f} EUR)"
-
+        txt_charges_pat = f"- Cotisations sociales ({scenario} {results['rate_pat_applied']*100:.2f}%) : **{results['base_employer_charges']:,.2f} EUR**"
+        txt_charges_pat += f"\n- + Mutuelle part patronale : **{results['mutuelle_part_pat']:,.2f} EUR**"
+        if results['tr_part_pat'] > 0:
+            txt_charges_pat += f"\n- + Titres Restaurant part patronale : **{results['tr_part_pat']:,.2f} EUR**"
+        txt_charges_pat += f"\n- + Cotisation Paritarisme (0.016%) : **{results['cotisation_paritarisme']:,.2f} EUR**"
         txt_charges_pat += f"\n\n= **Total Charges Patronales : {results['employer_charges']:,.2f} EUR**"
         st.markdown(txt_charges_pat)
 
@@ -821,14 +804,8 @@ Montant provisionne (epargne securite) : **{results['reserve_amount']:,.2f} EUR*
         if results.get('rate_scenario') == 'Reduit':
             txt_opti = "\n- Optimisation : Cette simulation integre les allegements de charges sociales en vigueur pour maximiser votre net."
 
-        # Complements maladie/AF
+        # Info charges patronales
         txt_complements = ""
-        if results['complement_maladie'] > 0 or results['complement_af'] > 0:
-            txt_complements = "\n\nInformation sur les charges patronales :"
-            if results['complement_maladie'] > 0:
-                txt_complements += f"\n- Complement Maladie (+6%) applique car brut > {results['threshold_maladie']:,.0f} EUR"
-            if results['complement_af'] > 0:
-                txt_complements += f"\n- Complement AF (+1.8%) applique car brut > {results['threshold_af']:,.0f} EUR"
 
         email_content = f"""Objet : Votre simulation de revenus - TJM {tjm} EUR
 

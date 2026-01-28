@@ -77,6 +77,10 @@ RGDU_TDELTA_FNAL_10 = 0.3781  # FNAL 0.10% (<50 salaries)
 RGDU_EXPOSANT = 1.75
 RGDU_SEUIL_SMIC = 3.0  # Jusqu'a 3 SMIC
 
+# --- Taux FNAL selon effectif ---
+FNAL_TAUX_SUP_50 = 0.0050  # 0.50% pour >= 50 salaries
+FNAL_TAUX_INF_50 = 0.0010  # 0.10% pour < 50 salaries
+
 # --- Fonction RGDU ---
 def calculer_rgdu(brut_mensuel, smic_mensuel, use_fnal_50=True):
     """
@@ -874,6 +878,27 @@ with tab_comm:
 = **{results['employer_charges']:,.2f} EUR**
         """)
 
+        with st.expander("Tableau des cotisations patronales URSSAF 2026"):
+            st.markdown("""
+| Cotisation | Taux | Base |
+|------------|------|------|
+| Maladie | 13.00% | Totalite |
+| Vieillesse deplafonnee | 2.11% | Totalite |
+| Vieillesse plafonnee | 8.55% | Tranche A (PMSS) |
+| Allocations Familiales | 5.25% | Totalite |
+| Chomage | 4.00% | Tranche A+B |
+| AGS | 0.25% | Tranche A+B |
+| FNAL (< 50 sal) | 0.10% | Tranche A |
+| CSA (Autonomie) | 0.30% | Totalite |
+| AT/MP | ~2.08% | Variable |
+| Retraite AGIRC-ARRCO T1 | 4.72% | Tranche A |
+| CEG T1 | 1.29% | Tranche A |
+| Dialogue Social | 0.016% | Totalite |
+| **TOTAL ESTIME** | **~42%** | |
+
+*PMSS 2026 = 4 005 EUR / SMIC 2026 = 1 823.03 EUR*
+            """)
+
         # Section 5 - Frais rembourses
         st.markdown("### 5. Les Frais Rembourses (non imposables)")
         txt_frais = ""
@@ -923,6 +948,24 @@ with tab_comm:
 **TOTAL CHARGES SALARIALES**
 = Cotisations ({results['employee_charges_base']:,.2f}) + Mutuelle ({results['mutuelle_part_sal']:,.2f}) + TR ({results['tr_part_sal']:,.2f})
 = **{results['employee_charges']:,.2f} EUR**
+        """)
+
+        with st.expander("Tableau des cotisations salariales URSSAF 2026"):
+            st.markdown("""
+| Cotisation | Taux | Base |
+|------------|------|------|
+| CSG deductible | 6.80% | 98.25% du brut |
+| CSG non deductible | 2.40% | 98.25% du brut |
+| CRDS | 0.50% | 98.25% du brut |
+| Vieillesse deplafonnee | 0.40% | Totalite |
+| Vieillesse plafonnee | 6.90% | Tranche A (PMSS) |
+| Chomage | 0.00% | - |
+| Retraite AGIRC-ARRCO T1 | 3.15% | Tranche A |
+| CEG T1 | 0.86% | Tranche A |
+| Maladie Alsace-Moselle | 1.30% | Si applicable |
+| **TOTAL ESTIME** | **~23%** | |
+
+*Les taux peuvent varier selon la situation du salarie*
         """)
 
         # Section 9 - Net final

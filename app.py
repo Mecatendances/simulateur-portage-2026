@@ -64,7 +64,9 @@ if 'cfg_seuil_reduit_smic' not in st.session_state:
 if 'cfg_seuil_maladie_smic' not in st.session_state:
     st.session_state.cfg_seuil_maladie_smic = 2.25
 if 'cfg_seuil_af_smic' not in st.session_state:
-    st.session_state.cfg_seuil_af_smic = 3.3 
+    st.session_state.cfg_seuil_af_smic = 3.3
+if 'cfg_taux_atmp' not in st.session_state:
+    st.session_state.cfg_taux_atmp = 0.64  # Taux AT/MP portage salarial
 
 # --- Constantes Forfait Teletravail ---
 TELETRAVAIL_TAUX_JOUR = 2.70  # EUR par jour
@@ -121,15 +123,17 @@ def calculer_rgdu(brut_mensuel, smic_mensuel, use_fnal_50=True):
 def calculate_salary(tjm, days_worked_month, days_worked_week,
                      ik_amount, igd_amount, other_expenses, use_reserve, use_mutuelle,
                      nb_titres_restaurant=0, frais_intermediation_pct=0.0,
-                     jours_teletravail=0, use_rgdu=False):
+                     jours_teletravail=0, use_rgdu=False, effectif_sup_50=False):
 
     cfg_base = st.session_state.cfg_base_salary
     rate_gestion = st.session_state.cfg_frais_gestion / 100.0
     rate_prime = st.session_state.cfg_taux_prime / 100.0
     rate_cp = st.session_state.cfg_taux_cp / 100.0
 
-    base_rate_pat = st.session_state.cfg_taux_pat / 100.0
-    reduced_rate_pat = st.session_state.cfg_taux_pat_reduit / 100.0
+    # Ajustement FNAL selon effectif : 0.50% si >= 50, 0.10% si < 50 (diff = 0.40%)
+    ajustement_fnal = 0.0040 if not effectif_sup_50 else 0.0
+    base_rate_pat = (st.session_state.cfg_taux_pat / 100.0) - ajustement_fnal
+    reduced_rate_pat = (st.session_state.cfg_taux_pat_reduit / 100.0) - ajustement_fnal
     rate_sal = st.session_state.cfg_taux_sal / 100.0
 
     smic = st.session_state.cfg_smic_mensuel
@@ -210,7 +214,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     # RGDU (Reduction Generale Degressive Unique) si activee
     reduction_rgdu = 0.0
     if use_rgdu:
-        reduction_rgdu = calculer_rgdu(gross_salary, smic, use_fnal_50=True)
+        reduction_rgdu = calculer_rgdu(gross_salary, smic, use_fnal_50=effectif_sup_50)
 
     # Charges patronales apres RGDU
     employer_charges_avant_rgdu = cotisations_sociales + mutuelle_part_pat + tr_part_pat + cotisation_paritarisme
@@ -272,7 +276,8 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "net_before_tax": net_before_tax,
         "net_payable": net_payable,
         "rate_scenario": rate_scenario,
-        "rate_pat_applied": final_rate_pat
+        "rate_pat_applied": final_rate_pat,
+        "effectif_sup_50": effectif_sup_50
     }
 
 # --- PDF Generation ---
@@ -282,7 +287,14 @@ def create_pdf(data, name):
     pdf.set_font("Arial", size=12)
 
     pdf.cell(200, 10, txt=f"Simulation de Salaire - {name}", ln=1, align="C")
-    pdf.ln(10)
+    pdf.ln(5)
+
+    # Parametres utilises
+    effectif_txt = "< 50 salaries" if not data.get('effectif_sup_50', False) else ">= 50 salaries"
+    fnal_txt = "0.10%" if not data.get('effectif_sup_50', False) else "0.50%"
+    pdf.set_font("Arial", 'I', size=9)
+    pdf.cell(200, 6, txt=f"Parametres: Effectif {effectif_txt} | FNAL {fnal_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}%", ln=1, align="C")
+    pdf.ln(5)
 
     t_gest = st.session_state.cfg_frais_gestion
     t_ik = st.session_state.cfg_ik_rate
@@ -342,8 +354,13 @@ def create_pdf(data, name):
         pdf.cell(140, 8, txt="Titres Restaurant Part Patronale", border=0)
         pdf.cell(50, 8, txt=f"{data['tr_part_pat']:,.2f} EUR", border=0, align='R', ln=1)
 
-    pdf.cell(140, 8, txt="Charges Patronales", border=0)
+    taux_pat_pct = data['rate_pat_applied'] * 100
+    pdf.cell(140, 8, txt=f"Charges Patronales ({taux_pat_pct:.2f}%)", border=0)
     pdf.cell(50, 8, txt=f"{data['employer_charges']:,.2f} EUR", border=0, align='R', ln=1)
+
+    if data.get('reduction_rgdu', 0) > 0:
+        pdf.cell(140, 8, txt="dont Reduction RGDU 2026", border=0)
+        pdf.cell(50, 8, txt=f"- {data['reduction_rgdu']:,.2f} EUR", border=0, align='R', ln=1)
 
     pdf.set_font("Arial", 'B', size=11)
     pdf.cell(140, 8, txt="= COUT GLOBAL SANS RESERVE", border='T')
@@ -376,6 +393,10 @@ def create_pdf(data, name):
     if data.get('igd_amount', 0) > 0:
         pdf.cell(140, 8, txt="Indemnites Grand Deplacement", border=0)
         pdf.cell(50, 8, txt=f"+ {data['igd_amount']:,.2f} EUR", border=0, align='R', ln=1)
+
+    if data.get('forfait_teletravail', 0) > 0:
+        pdf.cell(140, 8, txt=f"Forfait Teletravail ({data['jours_teletravail']}j x 2.70)", border=0)
+        pdf.cell(50, 8, txt=f"+ {data['forfait_teletravail']:,.2f} EUR", border=0, align='R', ln=1)
 
     if data.get('other_expenses', 0) > 0:
         pdf.cell(140, 8, txt="Autres Frais", border=0)
@@ -499,10 +520,14 @@ with st.sidebar:
     # RGDU appliquee automatiquement (obligatoire)
     use_rgdu = True
 
+    # Effectif entreprise (impacte FNAL et RGDU)
+    effectif_sup_50 = st.checkbox("Entreprise >= 50 salaries", value=False,
+                                   help="FNAL 0.50% si >= 50 sal. / 0.10% si < 50 sal.")
+
 # --- CALCUL AVANT AFFICHAGE ---
 results = calculate_salary(tjm, days_worked_month, days_worked_week,
                            ik_total, igd_total, expenses_other, use_reserve, use_mutuelle,
-                           nb_titres_restaurant, frais_intermediation_pct, jours_teletravail, use_rgdu)
+                           nb_titres_restaurant, frais_intermediation_pct, jours_teletravail, use_rgdu, effectif_sup_50)
 
 # Main : Onglets
 tab_simu, tab_config, tab_comm = st.tabs(["📊 Résultats Simulation", "⚙️ Configuration Globale", "📧 Email & Explications"])
@@ -532,9 +557,11 @@ with tab_simu:
 
         rate_pat_txt = f"{results['rate_pat_applied']*100:.2f}%"
         scenario = results.get('rate_scenario', 'Standard')
+        effectif_txt = "< 50 sal." if not results.get('effectif_sup_50', False) else ">= 50 sal."
 
         if scenario == "Reduit":
             rate_pat_txt += " (Reduit - Bas salaire)"
+        rate_pat_txt += f" [{effectif_txt}]"
 
         # Construction des lignes de detail charges patronales
         txt_pat_base = f"Charges Patronales base ({rate_pat_txt})"
@@ -620,9 +647,18 @@ with tab_simu:
 
         # Expanders pour details des calculs
         with st.expander("Detail Charges Patronales"):
+            effectif_label = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
+            fnal_rate = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
+
             st.markdown(f"""
+**Parametres appliques :**
+- Effectif : **{effectif_label}**
+- FNAL : **{fnal_rate}**
+- AT/MP : **{st.session_state.cfg_taux_atmp:.2f}%**
+
 **Cotisations Sociales** ({results['rate_pat_applied']*100:.2f}%)
 - Brut x Taux = {results['gross_salary']:,.2f} x {results['rate_pat_applied']*100:.2f}% = **{results['cotisations_sociales']:,.2f} EUR**
+- *(Ce taux inclut : Maladie, Vieillesse, AF, Chomage, FNAL, CSA, AT/MP, Retraite, etc.)*
 
 **+ Mutuelle Part Patronale**
 - PMSS x Taux Mutuelle x Part Patronale = {st.session_state.cfg_pmss:,.2f} x {st.session_state.cfg_mutuelle_taux}% x {st.session_state.cfg_mutuelle_part_pat}% = **{results['mutuelle_part_pat']:,.2f} EUR**
@@ -634,6 +670,7 @@ with tab_simu:
 - Brut x 0.016% = {results['gross_salary']:,.2f} x 0.016% = **{results['cotisation_paritarisme']:,.2f} EUR**
 
 **- Reduction RGDU 2026** (si brut < 3 SMIC = {3*st.session_state.cfg_smic_mensuel:,.2f} EUR)
+- Effectif : {effectif_label} → Tdelta = {"0.3821" if results.get('effectif_sup_50', False) else "0.3781"}
 - Applicable : {"OUI" if results.get('reduction_rgdu', 0) > 0 else "NON (brut trop eleve)"}
 - Montant : **{results.get('reduction_rgdu', 0):,.2f} EUR**
 
@@ -731,12 +768,22 @@ with tab_config:
     with c2:
         st.subheader("Charges & Mutuelle")
         st.session_state.cfg_taux_pat = st.number_input(
-            "Taux Charges Patronales (%)",
-            value=st.session_state.cfg_taux_pat, format="%.2f", step=0.05
+            "Taux Charges Patronales de base (%)",
+            value=st.session_state.cfg_taux_pat, format="%.2f", step=0.05,
+            help="Taux pour >= 50 salaries (FNAL 0.50%). Pour < 50 sal., -0.40%"
         )
+        # Afficher le taux ajuste selon effectif
+        taux_pat_ajuste = st.session_state.cfg_taux_pat - (0.40 if not effectif_sup_50 else 0.0)
+        st.caption(f"Taux applique : **{taux_pat_ajuste:.2f}%** ({'< 50 sal.' if not effectif_sup_50 else '>= 50 sal.'})")
+
         st.session_state.cfg_taux_sal = st.number_input(
             "Taux Charges Salariales (%)",
             value=st.session_state.cfg_taux_sal, format="%.2f", step=0.05
+        )
+        st.session_state.cfg_taux_atmp = st.number_input(
+            "Taux AT/MP (%)",
+            value=st.session_state.cfg_taux_atmp, format="%.2f", step=0.01,
+            help="Accident du Travail / Maladie Professionnelle. Varie selon activite (0.89% a 2.08%)"
         )
         st.divider()
         st.markdown("#### Seuils & Bascule")
@@ -853,8 +900,15 @@ with tab_comm:
         # Section 4 - Charges patronales
         st.markdown("### 4. Les Charges Patronales (detail)")
         scenario = results.get('rate_scenario', 'Standard')
+        effectif_expl = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
+        fnal_expl = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
 
         st.markdown(f"""
+**Parametres :**
+- Effectif entreprise : **{effectif_expl}**
+- FNAL : **{fnal_expl}**
+- AT/MP : **{st.session_state.cfg_taux_atmp:.2f}%**
+
 **Cotisations Sociales Patronales** ({scenario} {results['rate_pat_applied']*100:.2f}%)
 - Calcul : {results['gross_salary']:,.2f} x {results['rate_pat_applied']*100:.2f}% = **{results['cotisations_sociales']:,.2f} EUR**
 
@@ -879,24 +933,37 @@ with tab_comm:
         """)
 
         with st.expander("Tableau des cotisations patronales URSSAF 2026"):
-            st.markdown("""
+            fnal_taux = "0.50%" if results.get('effectif_sup_50', False) else "0.10%"
+            fnal_base = "Totalite" if results.get('effectif_sup_50', False) else "Tranche A"
+            taux_applique = results['rate_pat_applied'] * 100
+
+            st.info(f"**Effectif : {'≥ 50 salaries' if results.get('effectif_sup_50', False) else '< 50 salaries'}** | FNAL {fnal_taux} | **Taux applique : {taux_applique:.2f}%**")
+
+            st.markdown(f"""
 | Cotisation | Taux | Base |
 |------------|------|------|
 | Maladie | 13.00% | Totalite |
-| Vieillesse deplafonnee | 2.11% | Totalite |
+| Vieillesse deplafonnee | 2.02% | Totalite |
 | Vieillesse plafonnee | 8.55% | Tranche A (PMSS) |
 | Allocations Familiales | 5.25% | Totalite |
-| Chomage | 4.00% | Tranche A+B |
-| AGS | 0.25% | Tranche A+B |
-| FNAL (< 50 sal) | 0.10% | Tranche A |
+| Chomage | 4.05% | Tranche A+B |
+| AGS | 0.15% | Tranche A+B |
+| **FNAL** | **{fnal_taux}** | {fnal_base} |
 | CSA (Autonomie) | 0.30% | Totalite |
-| AT/MP | ~2.08% | Variable |
+| **AT/MP** | **{st.session_state.cfg_taux_atmp:.2f}%** | Totalite |
 | Retraite AGIRC-ARRCO T1 | 4.72% | Tranche A |
+| Retraite AGIRC-ARRCO T2 | 12.95% | Tranche B |
 | CEG T1 | 1.29% | Tranche A |
+| CEG T2 | 1.62% | Tranche B |
 | Dialogue Social | 0.016% | Totalite |
-| **TOTAL ESTIME** | **~42%** | |
+| Formation prof. | 1.00% | Totalite |
+| Taxe apprentissage | 0.68% | Totalite |
+| Prevoyance cadre | 1.50% | Tranche A |
+| **TOTAL simule** | **{taux_applique:.2f}%** | *Sur brut* |
 
 *PMSS 2026 = 4 005 EUR / SMIC 2026 = 1 823.03 EUR*
+
+**Note :** Le taux total est simule car certaines cotisations sont plafonnees (Tranche A = PMSS). Pour les bruts > PMSS, le taux effectif peut varier.
             """)
 
         # Section 5 - Frais rembourses
@@ -951,7 +1018,11 @@ with tab_comm:
         """)
 
         with st.expander("Tableau des cotisations salariales URSSAF 2026"):
-            st.markdown("""
+            taux_sal_applique = st.session_state.cfg_taux_sal
+
+            st.info(f"**Taux applique : {taux_sal_applique:.2f}%**")
+
+            st.markdown(f"""
 | Cotisation | Taux | Base |
 |------------|------|------|
 | CSG deductible | 6.80% | 98.25% du brut |
@@ -959,14 +1030,15 @@ with tab_comm:
 | CRDS | 0.50% | 98.25% du brut |
 | Vieillesse deplafonnee | 0.40% | Totalite |
 | Vieillesse plafonnee | 6.90% | Tranche A (PMSS) |
-| Chomage | 0.00% | - |
+| Chomage | 0.00% | Supprime en 2018 |
 | Retraite AGIRC-ARRCO T1 | 3.15% | Tranche A |
+| Retraite AGIRC-ARRCO T2 | 8.64% | Tranche B |
 | CEG T1 | 0.86% | Tranche A |
-| Maladie Alsace-Moselle | 1.30% | Si applicable |
-| **TOTAL ESTIME** | **~23%** | |
+| CEG T2 | 1.08% | Tranche B |
+| **TOTAL simule** | **{taux_sal_applique:.2f}%** | *Sur brut* |
 
-*Les taux peuvent varier selon la situation du salarie*
-        """)
+*PMSS 2026 = 4 005 EUR / SMIC 2026 = 1 823.03 EUR*
+            """)
 
         # Section 9 - Net final
         st.markdown("### 9. Le Net Avant Impot")
@@ -991,6 +1063,8 @@ with tab_comm:
                 details_frais.append(f"IK ({st.session_state.cfg_ik_rate:.3f} EUR/km) : {results['ik_amount']:,.2f} EUR")
             if results['igd_amount'] > 0:
                 details_frais.append(f"IGD : {results['igd_amount']:,.2f} EUR")
+            if results.get('forfait_teletravail', 0) > 0:
+                details_frais.append(f"Teletravail ({results['jours_teletravail']}j) : {results['forfait_teletravail']:,.2f} EUR")
             if results['other_expenses'] > 0:
                 details_frais.append(f"Autres frais : {results['other_expenses']:,.2f} EUR")
 
@@ -1022,6 +1096,11 @@ with tab_comm:
         if results.get('rate_scenario') == 'Reduit':
             txt_opti = "\n- Optimisation : Cette simulation integre les allegements de charges sociales en vigueur pour maximiser votre net."
 
+        # RGDU
+        txt_rgdu = ""
+        if results.get('reduction_rgdu', 0) > 0:
+            txt_rgdu = f"\n- RGDU 2026 : Reduction des charges patronales de {results['reduction_rgdu']:,.2f} EUR (allegement automatique)."
+
         # Info charges patronales
         txt_complements = ""
 
@@ -1039,7 +1118,7 @@ VOTRE NET A PAYER ESTIME : {results['net_payable']:,.2f} EUR
 Ce montant comprend :
 *   Votre Salaire Net (apres deduction de toutes les charges sociales).{txt_frais}
 
-Les points cles de cette simulation :{txt_mutuelle}{txt_reserve_mail}{txt_tr}{txt_opti}
+Les points cles de cette simulation :{txt_mutuelle}{txt_reserve_mail}{txt_tr}{txt_opti}{txt_rgdu}
 - Securite : Cotisations completes (Chomage, Retraite Cadre, Securite Sociale).
 - Transparence : Tout est detaille dans le PDF ci-joint (Baremes 2026).
 {txt_complements}

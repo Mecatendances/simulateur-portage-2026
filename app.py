@@ -611,8 +611,70 @@ with tab_simu:
             .style.format({"Montant": "{:,.2f} EUR"}),
             use_container_width=True,
             hide_index=True,
-            height=700
+            height=600
         )
+
+        # Expanders pour details des calculs
+        with st.expander("Detail Charges Patronales"):
+            st.markdown(f"""
+**Cotisations Sociales** ({results['rate_pat_applied']*100:.2f}%)
+- Brut x Taux = {results['gross_salary']:,.2f} x {results['rate_pat_applied']*100:.2f}% = **{results['cotisations_sociales']:,.2f} EUR**
+
+**+ Mutuelle Part Patronale**
+- PMSS x Taux Mutuelle x Part Patronale = {st.session_state.cfg_pmss:,.2f} x {st.session_state.cfg_mutuelle_taux}% x {st.session_state.cfg_mutuelle_part_pat}% = **{results['mutuelle_part_pat']:,.2f} EUR**
+
+**+ Titres Restaurant Part Patronale**
+- Nb TR x 7.18 = {results['nb_titres_restaurant']} x 7.18 = **{results['tr_part_pat']:,.2f} EUR**
+
+**+ Cotisation Paritarisme** (0.016%)
+- Brut x 0.016% = {results['gross_salary']:,.2f} x 0.016% = **{results['cotisation_paritarisme']:,.2f} EUR**
+
+**- Reduction RGDU 2026** (si brut < 3 SMIC = {3*st.session_state.cfg_smic_mensuel:,.2f} EUR)
+- Applicable : {"OUI" if results.get('reduction_rgdu', 0) > 0 else "NON (brut trop eleve)"}
+- Montant : **{results.get('reduction_rgdu', 0):,.2f} EUR**
+
+---
+**TOTAL = {results['cotisations_sociales']:,.2f} + {results['mutuelle_part_pat']:,.2f} + {results['tr_part_pat']:,.2f} + {results['cotisation_paritarisme']:,.2f} - {results.get('reduction_rgdu', 0):,.2f} = {results['employer_charges']:,.2f} EUR**
+            """)
+
+        with st.expander("Detail Charges Salariales"):
+            st.markdown(f"""
+**Cotisations Sociales** ({st.session_state.cfg_taux_sal}%)
+- Brut x Taux = {results['gross_salary']:,.2f} x {st.session_state.cfg_taux_sal}% = **{results['employee_charges_base']:,.2f} EUR**
+
+**+ Mutuelle Part Salariale**
+- PMSS x Taux Mutuelle x Part Salariale = {st.session_state.cfg_pmss:,.2f} x {st.session_state.cfg_mutuelle_taux}% x {100-st.session_state.cfg_mutuelle_part_pat}% = **{results['mutuelle_part_sal']:,.2f} EUR**
+
+**+ Titres Restaurant Part Salariale**
+- Nb TR x 7.18 = {results['nb_titres_restaurant']} x 7.18 = **{results['tr_part_sal']:,.2f} EUR**
+
+---
+**TOTAL = {results['employee_charges_base']:,.2f} + {results['mutuelle_part_sal']:,.2f} + {results['tr_part_sal']:,.2f} = {results['employee_charges']:,.2f} EUR**
+            """)
+
+        with st.expander("Formules de Calcul"):
+            st.markdown(f"""
+**NET AVANT IMPOT**
+```
+= BRUT - CHARGES SALARIALES + TOTAL FRAIS
+= {results['gross_salary']:,.2f} - {results['employee_charges']:,.2f} + {results['total_frais_rembourses']:,.2f}
+= {results['net_before_tax']:,.2f} EUR
+```
+
+**COUT GLOBAL SANS RESERVE**
+```
+= BRUT + CHARGES PATRONALES + TOTAL FRAIS
+= {results['gross_salary']:,.2f} + {results['employer_charges']:,.2f} + {results['total_frais_rembourses']:,.2f}
+= {results['cout_global_sans_reserve']:,.2f} EUR
+```
+
+**RESERVE FINANCIERE**
+```
+= MONTANT DISPONIBLE - COUT GLOBAL SANS RESERVE
+= {results['montant_disponible']:,.2f} - {results['cout_global_sans_reserve']:,.2f}
+= {results['reserve_amount']:,.2f} EUR
+```
+            """)
 
     with col_viz:
         st.subheader("Repartition")

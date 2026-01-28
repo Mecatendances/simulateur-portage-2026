@@ -70,11 +70,54 @@ if 'cfg_seuil_af_smic' not in st.session_state:
 TELETRAVAIL_TAUX_JOUR = 2.70  # EUR par jour
 TELETRAVAIL_MAX_JOURS = 22    # Maximum 22 jours
 
+# --- Parametres RGDU 2026 ---
+RGDU_TMIN = 0.02  # Seuil minimal d'exoneration
+RGDU_TDELTA_FNAL_50 = 0.3821  # FNAL 0.50% (>=50 salaries)
+RGDU_TDELTA_FNAL_10 = 0.3781  # FNAL 0.10% (<50 salaries)
+RGDU_EXPOSANT = 1.75
+RGDU_SEUIL_SMIC = 3.0  # Jusqu'a 3 SMIC
+
+# --- Fonction RGDU ---
+def calculer_rgdu(brut_mensuel, smic_mensuel, use_fnal_50=True):
+    """
+    Calcule la Reduction Generale Degressive Unique (RGDU) 2026
+    Retourne le montant de la reduction des charges patronales
+    """
+    smic_annuel = smic_mensuel * 12
+    brut_annuel = brut_mensuel * 12
+
+    # Pas de reduction au-dela de 3 SMIC
+    if brut_annuel >= RGDU_SEUIL_SMIC * smic_annuel:
+        return 0.0
+
+    # Choix du Tdelta selon FNAL
+    tdelta = RGDU_TDELTA_FNAL_50 if use_fnal_50 else RGDU_TDELTA_FNAL_10
+
+    # Formule RGDU 2026
+    # Coefficient = Tmin + (Tdelta × [(1/2) × (3 × SMIC_annuel / Brut_annuel - 1)]^P)
+    ratio = (RGDU_SEUIL_SMIC * smic_annuel / brut_annuel) - 1
+    if ratio <= 0:
+        return 0.0
+
+    base = 0.5 * ratio
+    coefficient = RGDU_TMIN + (tdelta * (base ** RGDU_EXPOSANT))
+
+    # Plafonner le coefficient a Tmin + Tdelta
+    coefficient = min(coefficient, RGDU_TMIN + tdelta)
+
+    # Arrondir a 4 decimales
+    coefficient = round(coefficient, 4)
+
+    # Reduction mensuelle
+    reduction = brut_mensuel * coefficient
+
+    return reduction
+
 # --- Moteur de Calcul ---
 def calculate_salary(tjm, days_worked_month, days_worked_week,
                      ik_amount, igd_amount, other_expenses, use_reserve, use_mutuelle,
                      nb_titres_restaurant=0, frais_intermediation_pct=0.0,
-                     jours_teletravail=0):
+                     jours_teletravail=0, use_rgdu=False):
 
     cfg_base = st.session_state.cfg_base_salary
     rate_gestion = st.session_state.cfg_frais_gestion / 100.0
@@ -159,7 +202,15 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     # = Cotisations sociales (brut x taux) + Mutuelle pat + TR pat + Paritarisme
     cotisations_sociales = gross_salary * final_rate_pat
     cotisation_paritarisme = gross_salary * 0.00016
-    employer_charges = cotisations_sociales + mutuelle_part_pat + tr_part_pat + cotisation_paritarisme
+
+    # RGDU (Reduction Generale Degressive Unique) si activee
+    reduction_rgdu = 0.0
+    if use_rgdu:
+        reduction_rgdu = calculer_rgdu(gross_salary, smic, use_fnal_50=True)
+
+    # Charges patronales apres RGDU
+    employer_charges_avant_rgdu = cotisations_sociales + mutuelle_part_pat + tr_part_pat + cotisation_paritarisme
+    employer_charges = employer_charges_avant_rgdu - reduction_rgdu
 
     # Charges salariales = Brut x taux_sal + Mutuelle sal + TR sal
     employee_charges_base = gross_salary * rate_sal
@@ -202,8 +253,10 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "gross_salary": gross_salary,
         "reserve_amount": reserve_amount,
         "employer_charges": employer_charges,
+        "employer_charges_avant_rgdu": employer_charges_avant_rgdu,
         "cotisations_sociales": cotisations_sociales,
         "cotisation_paritarisme": cotisation_paritarisme,
+        "reduction_rgdu": reduction_rgdu,
         "employee_charges": employee_charges,
         "employee_charges_base": employee_charges_base,
         "mutuelle_part_pat": mutuelle_part_pat,
@@ -430,6 +483,8 @@ with st.sidebar:
     st.caption(f"Total Autres Frais : {expenses_other:,.2f} EUR")
 
     st.markdown("---")
+    st.subheader("Options")
+
     # Inverser la logique : coche = reserve reintegree (donc use_reserve = False pour provisionnement)
     reserve_reintegree = st.checkbox("Reserve Financiere reintegree", value=False,
                                      help="Cochez pour reintegrer la reserve (positif). Decochez pour provisionner (negatif).")
@@ -437,10 +492,13 @@ with st.sidebar:
 
     use_mutuelle = st.checkbox("Mutuelle Sante", value=True)
 
+    # RGDU appliquee automatiquement (obligatoire)
+    use_rgdu = True
+
 # --- CALCUL AVANT AFFICHAGE ---
 results = calculate_salary(tjm, days_worked_month, days_worked_week,
                            ik_total, igd_total, expenses_other, use_reserve, use_mutuelle,
-                           nb_titres_restaurant, frais_intermediation_pct, jours_teletravail)
+                           nb_titres_restaurant, frais_intermediation_pct, jours_teletravail, use_rgdu)
 
 # Main : Onglets
 tab_simu, tab_config, tab_comm = st.tabs(["📊 Résultats Simulation", "⚙️ Configuration Globale", "📧 Email & Explications"])
@@ -512,6 +570,10 @@ with tab_simu:
         # Charges patronales avec detail
         data_lines.append((f"Cotisations Sociales ({rate_pat_txt})", results['cotisations_sociales'], "Detail"))
         data_lines.append((f"+ Cotisation Paritarisme (0.016%)", results['cotisation_paritarisme'], "Detail"))
+
+        if results.get('reduction_rgdu', 0) > 0:
+            data_lines.append(("- Reduction RGDU 2026", -results['reduction_rgdu'], "Positif"))
+
         data_lines.append(("= Total Charges Patronales", results['employer_charges'], "Total"))
         data_lines.append(("", 0, "Empty"))
 
@@ -730,6 +792,12 @@ with tab_comm:
         if results['tr_part_pat'] > 0:
             txt_charges_pat += f"\n- + Titres Restaurant part patronale : **{results['tr_part_pat']:,.2f} EUR**"
         txt_charges_pat += f"\n- + Cotisation Paritarisme (0.016%) : **{results['cotisation_paritarisme']:,.2f} EUR**"
+
+        if results.get('reduction_rgdu', 0) > 0:
+            txt_charges_pat += f"\n\n**Reduction RGDU 2026 (obligatoire) :**"
+            txt_charges_pat += f"\n- Reduction allegement charges : **-{results['reduction_rgdu']:,.2f} EUR**"
+            txt_charges_pat += f"\n*(Applicable car brut < 3 SMIC = {3 * st.session_state.cfg_smic_mensuel:,.0f} EUR)*"
+
         txt_charges_pat += f"\n\n= **Total Charges Patronales : {results['employer_charges']:,.2f} EUR**"
         st.markdown(txt_charges_pat)
 

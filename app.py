@@ -787,19 +787,30 @@ with tab_comm:
         # Section 4 - Charges patronales
         st.markdown("### 4. Les Charges Patronales (detail)")
         scenario = results.get('rate_scenario', 'Standard')
-        txt_charges_pat = f"- Cotisations sociales ({scenario} {results['rate_pat_applied']*100:.2f}%) : **{results['cotisations_sociales']:,.2f} EUR**"
-        txt_charges_pat += f"\n- + Mutuelle part patronale : **{results['mutuelle_part_pat']:,.2f} EUR**"
-        if results['tr_part_pat'] > 0:
-            txt_charges_pat += f"\n- + Titres Restaurant part patronale : **{results['tr_part_pat']:,.2f} EUR**"
-        txt_charges_pat += f"\n- + Cotisation Paritarisme (0.016%) : **{results['cotisation_paritarisme']:,.2f} EUR**"
+
+        st.markdown(f"""
+**Cotisations Sociales Patronales** ({scenario} {results['rate_pat_applied']*100:.2f}%)
+- Calcul : {results['gross_salary']:,.2f} x {results['rate_pat_applied']*100:.2f}% = **{results['cotisations_sociales']:,.2f} EUR**
+
+**Elements supplementaires :**
+- Mutuelle part patronale : **{results['mutuelle_part_pat']:,.2f} EUR**
+- Titres Restaurant part patronale ({results['nb_titres_restaurant']} x {TR_PART_PATRONALE_MAX:.2f}) : **{results['tr_part_pat']:,.2f} EUR**
+- Cotisation Paritarisme (0.016%) : {results['gross_salary']:,.2f} x 0.016% = **{results['cotisation_paritarisme']:,.2f} EUR**
+        """)
 
         if results.get('reduction_rgdu', 0) > 0:
-            txt_charges_pat += f"\n\n**Reduction RGDU 2026 (obligatoire) :**"
-            txt_charges_pat += f"\n- Reduction allegement charges : **-{results['reduction_rgdu']:,.2f} EUR**"
-            txt_charges_pat += f"\n*(Applicable car brut < 3 SMIC = {3 * st.session_state.cfg_smic_mensuel:,.0f} EUR)*"
+            st.markdown(f"""
+**Reduction RGDU 2026 (obligatoire)** - Allegement charges patronales
+- Seuil : Brut < 3 SMIC ({3 * st.session_state.cfg_smic_mensuel:,.2f} EUR)
+- Votre brut : {results['gross_salary']:,.2f} EUR (eligible)
+- Reduction calculee : **-{results['reduction_rgdu']:,.2f} EUR**
+            """)
 
-        txt_charges_pat += f"\n\n= **Total Charges Patronales : {results['employer_charges']:,.2f} EUR**"
-        st.markdown(txt_charges_pat)
+        st.success(f"""
+**TOTAL CHARGES PATRONALES**
+= Cotisations ({results['cotisations_sociales']:,.2f}) + Mutuelle ({results['mutuelle_part_pat']:,.2f}) + TR ({results['tr_part_pat']:,.2f}) + Paritarisme ({results['cotisation_paritarisme']:,.2f}) - RGDU ({results.get('reduction_rgdu', 0):,.2f})
+= **{results['employer_charges']:,.2f} EUR**
+        """)
 
         # Section 5 - Frais rembourses
         st.markdown("### 5. Les Frais Rembourses (non imposables)")
@@ -835,13 +846,22 @@ with tab_comm:
             """)
 
         # Section 8 - Charges salariales
-        st.markdown("### 8. Les Charges Salariales")
-        txt_charges_sal = f"- Cotisations ({st.session_state.cfg_taux_sal}% sur le brut) : **{results['employee_charges_base']:,.2f} EUR**"
-        txt_charges_sal += f"\n- + Mutuelle part salariale : **{results['mutuelle_part_sal']:,.2f} EUR**"
-        if results['tr_part_sal'] > 0:
-            txt_charges_sal += f"\n- + Titres Restaurant part salariale : **{results['tr_part_sal']:,.2f} EUR**"
-        txt_charges_sal += f"\n\n= **Total Charges Salariales : {results['employee_charges']:,.2f} EUR**"
-        st.markdown(txt_charges_sal)
+        st.markdown("### 8. Les Charges Salariales (detail)")
+
+        st.markdown(f"""
+**Cotisations Sociales Salariales** ({st.session_state.cfg_taux_sal}%)
+- Calcul : {results['gross_salary']:,.2f} x {st.session_state.cfg_taux_sal}% = **{results['employee_charges_base']:,.2f} EUR**
+
+**Elements supplementaires :**
+- Mutuelle part salariale : **{results['mutuelle_part_sal']:,.2f} EUR**
+- Titres Restaurant part salariale ({results['nb_titres_restaurant']} x {TR_PART_PATRONALE_MAX:.2f}) : **{results['tr_part_sal']:,.2f} EUR**
+        """)
+
+        st.success(f"""
+**TOTAL CHARGES SALARIALES**
+= Cotisations ({results['employee_charges_base']:,.2f}) + Mutuelle ({results['mutuelle_part_sal']:,.2f}) + TR ({results['tr_part_sal']:,.2f})
+= **{results['employee_charges']:,.2f} EUR**
+        """)
 
         # Section 9 - Net final
         st.markdown("### 9. Le Net Avant Impot")

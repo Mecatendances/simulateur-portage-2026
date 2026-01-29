@@ -524,7 +524,7 @@ def create_pdf(data, name):
 
     # --- Provision Reserve Financiere ---
     pdf.set_font("Arial", size=11)
-    if data.get('provision_reserve_financiere', 0) > 0:
+    if data.get('reserve_amount', 0) > 0 and data.get('provision_reserve_financiere', 0) > 0:
         pdf.cell(140, 8, txt="Provision Reserve Financiere", border=0)
         pdf.cell(50, 8, txt=f"{data['provision_reserve_financiere']:,.2f} EUR", border=0, align='R', ln=1)
 
@@ -828,7 +828,7 @@ with tab_simu:
             fnal_rate_txt = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
 
             taux_source = "configure" if st.session_state.cfg_taux_charges_override > 0 else "calcule"
-            st.info(f"**Effectif : {effectif_label}** | FNAL {fnal_rate_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}% | Taux de charges : {results['taux_charges']*100:.2f}% ({taux_source})")
+            st.info(f"**Effectif : {effectif_label}** | FNAL {fnal_rate_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}% | Taux de charges patronales : {results['taux_charges']*100:.2f}% ({taux_source})")
 
             pat_lines = [d for d in results['cotis_details'] if d['montant_pat'] > 0]
             df_pat = pd.DataFrame([{
@@ -911,7 +911,7 @@ with tab_simu:
 
 **PROVISION RESERVE FINANCIERE**
 ```
-= MONTANT DISPO - (BRUT + CHARGES PAT)
+= BUDGET SALAIRE - (BRUT + CHARGES PAT)
 = {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
 = {results['provision_reserve_financiere']:,.2f} EUR
 ```
@@ -924,12 +924,13 @@ with tab_simu:
                          + results['forfait_social'] - results['reduction_rgdu'])
         charges_mutuelle_tr = (results['mutuelle_part_pat'] + results['mutuelle_part_sal']
                                + results['tr_part_pat'] + results['tr_part_sal'])
+        provision_viz = results.get('provision_reserve_financiere', 0) if use_reserve else 0
         labels = ['Net Avant Impot', 'Cotisations Sociales', 'Mutuelle & TR', 'Frais Gestion', 'Provision Reserve']
         values = [results['net_before_tax'],
                   charges_cotis,
                   charges_mutuelle_tr,
                   results['management_fees'] + results['frais_intermediation'],
-                  results.get('provision_reserve_financiere', 0)]
+                  provision_viz]
 
         fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4)])
         fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
@@ -973,9 +974,9 @@ with tab_config:
     with c2:
         st.subheader("Cotisations & References")
         st.session_state.cfg_taux_charges_override = st.number_input(
-            "TAUX DE CHARGES Silae (%)", min_value=0.0,
+            "TAUX DE CHARGES PATRONALES Silae (%)", min_value=0.0,
             value=st.session_state.cfg_taux_charges_override, format="%.4f", step=0.0001,
-            help="0 = auto-calcul. Saisir le taux Silae pour matcher le complement de remuneration exactement."
+            help="0 = auto-calcul. Saisir le taux Silae (patronal) pour matcher le complement de remuneration exactement."
         )
         st.session_state.cfg_taux_atmp = st.number_input(
             "Taux AT/MP (%)",
@@ -1076,7 +1077,7 @@ with tab_comm:
 = **Salaire Brut Total : {results['gross_salary']:,.2f} EUR**
 
 *Tranches : A = {results['tranche_a']:,.2f} EUR (PMSS) | B = {results['tranche_b']:,.2f} EUR*"""
-        if results.get('provision_reserve_financiere', 0) > 0:
+        if use_reserve and results.get('provision_reserve_financiere', 0) > 0:
             txt_brut += f"\n\n*Provision Reserve Financiere : {results['provision_reserve_financiere']:,.2f} EUR (reserve + charges futures, hors brut)*"
         st.markdown(txt_brut)
 
@@ -1156,7 +1157,7 @@ with tab_comm:
         if use_reserve and results.get('provision_reserve_financiere', 0) > 0:
             st.markdown("### 7. La Provision Reserve Financiere")
             st.markdown(f"""
-**PROVISION RESERVE FINANCIERE = MONTANT DISPO - (BRUT + CHARGES PAT)**
+**PROVISION RESERVE FINANCIERE = BUDGET SALAIRE - (BRUT + CHARGES PAT)**
 
 = {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
 = **{results['provision_reserve_financiere']:,.2f} EUR**

@@ -911,7 +911,7 @@ with tab_simu:
 
 **PROVISION RESERVE FINANCIERE**
 ```
-= BUDGET SALAIRE - (BRUT + CHARGES PAT)
+= MONTANT DISPO - (BRUT + CHARGES PAT)
 = {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
 = {results['provision_reserve_financiere']:,.2f} EUR
 ```
@@ -1157,7 +1157,7 @@ with tab_comm:
         if use_reserve and results.get('provision_reserve_financiere', 0) > 0:
             st.markdown("### 7. La Provision Reserve Financiere")
             st.markdown(f"""
-**PROVISION RESERVE FINANCIERE = BUDGET SALAIRE - (BRUT + CHARGES PAT)**
+**PROVISION RESERVE FINANCIERE = MONTANT DISPO - (BRUT + CHARGES PAT)**
 
 = {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
 = **{results['provision_reserve_financiere']:,.2f} EUR**

@@ -325,7 +325,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
             pt2 = pd2 + mutuelle_part_pat + ps2
             c2_ = calculer_cotisations(brut_avec_reserve, pmss, atmp_rate, fnal_rate, pt2)
             fs2 = round(pt2 * 0.08, 2)
-            ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + reserve_brute * rate_cp
+            ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + reserve_brute * rate_cp + mutuelle_part_pat * (reserve_brute / pool)
             tn = (ch_brut + ch_reserve) / pool if pool > 0 else 0
             if abs(tn - taux_charges) < 0.00001:
                 taux_charges = tn

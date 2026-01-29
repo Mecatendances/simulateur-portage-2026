@@ -996,8 +996,8 @@ with tab_config:
         )
         st.session_state.cfg_taux_charges_override = st.number_input(
             "Taux de charges (%)", min_value=0.0,
-            value=st.session_state.cfg_taux_charges_override, format="%.2f", step=0.01,
-            help="0 = auto-calcul. Saisir le taux Silae (ex: 58.61) pour matcher exactement."
+            value=st.session_state.cfg_taux_charges_override, format="%.4f", step=0.0001,
+            help="0 = auto-calcul. Saisir le taux Silae (ex: 58.6076) pour matcher exactement."
         )
 
         fnal_effectif = "0.10% (< 50 sal.)" if not effectif_sup_50 else "0.50% (>= 50 sal.)"

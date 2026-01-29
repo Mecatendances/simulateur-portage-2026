@@ -130,10 +130,17 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     rate_prime = st.session_state.cfg_taux_prime / 100.0
     rate_cp = st.session_state.cfg_taux_cp / 100.0
 
-    # Ajustement FNAL selon effectif : 0.50% si >= 50, 0.10% si < 50 (diff = 0.40%)
+    # Ajustements du taux patronal :
+    # 1. FNAL : -0.40% si < 50 salaries (0.10% au lieu de 0.50%)
+    # 2. AT/MP : le taux de base inclut 0.64% d'AT/MP par defaut,
+    #    on ajuste si l'utilisateur modifie le taux AT/MP
     ajustement_fnal = 0.0040 if not effectif_sup_50 else 0.0
-    base_rate_pat = (st.session_state.cfg_taux_pat / 100.0) - ajustement_fnal
-    reduced_rate_pat = (st.session_state.cfg_taux_pat_reduit / 100.0) - ajustement_fnal
+    atmp_reference = 0.0064  # AT/MP de reference inclus dans le taux de base
+    atmp_config = st.session_state.cfg_taux_atmp / 100.0
+    ajustement_atmp = atmp_config - atmp_reference  # delta par rapport au taux de base
+
+    base_rate_pat = (st.session_state.cfg_taux_pat / 100.0) - ajustement_fnal + ajustement_atmp
+    reduced_rate_pat = (st.session_state.cfg_taux_pat_reduit / 100.0) - ajustement_fnal + ajustement_atmp
     rate_sal = st.session_state.cfg_taux_sal / 100.0
 
     smic = st.session_state.cfg_smic_mensuel
@@ -172,12 +179,21 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     base_salary = cfg_base * (days_worked_week / 5.0)
     prime_apport = base_salary * rate_prime
 
-    # Budget pour calculer le brut : Montant disponible - Frais
-    # On resout : Brut x (1 + taux_pat) = Budget disponible pour masse salariale
-    budget_masse_salariale = montant_disponible - total_frais_rembourses
+    # Reserve financiere = salaire de base x taux reserve
+    rate_reserve = st.session_state.cfg_taux_reserve / 100.0
+    reserve_brute = cfg_base * (days_worked_week / 5.0) * rate_reserve
+
+    # Budget pour calculer le brut :
+    # On soustrait d'abord les couts fixes (frais, mutuelle pat, TR pat, reserve)
+    # puis on resout : Brut x (1 + taux_pat + paritarisme) = Budget restant
+    couts_fixes_pat = mutuelle_part_pat + tr_part_pat
+    budget_masse_salariale = montant_disponible - total_frais_rembourses - couts_fixes_pat - reserve_brute
+
+    # Taux effectif = taux patronal + paritarisme (0.016%)
+    taux_paritarisme = 0.00016
 
     def solve_gross(cost, pat_rate):
-        return cost / (1 + pat_rate)
+        return cost / (1 + pat_rate + taux_paritarisme)
 
     rate_scenario = "Standard"
     final_rate_pat = base_rate_pat
@@ -227,20 +243,14 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     # COUT GLOBAL SANS RESERVE = BRUT + CHARGES PATRONALES + TOTAL FRAIS
     cout_global_sans_reserve = gross_salary + employer_charges + total_frais_rembourses
 
-    # RESERVE = MONTANT DISPONIBLE - COUT GLOBAL SANS RESERVE
-    reserve_amount = montant_disponible - cout_global_sans_reserve
-    if reserve_amount < 0:
-        reserve_amount = 0
+    # RESERVE = SALAIRE DE BASE x 10% (deja deduite du budget)
+    reserve_amount = reserve_brute if use_reserve else 0
 
-    # Si use_reserve = False, on reintegre la reserve (pas de provisionnement)
-    if not use_reserve:
-        reserve_amount = 0
+    # NET AVANT IMPOT = BRUT - CHARGES SALARIALES
+    net_before_tax = gross_salary - employee_charges
 
-    # NET AVANT IMPOT = BRUT - CHARGES SALARIALES + TOTAL FRAIS
-    net_before_tax = gross_salary - employee_charges + total_frais_rembourses
-
-    # NET A PAYER = NET AVANT IMPOT (deja inclus les frais)
-    net_payable = net_before_tax
+    # NET A PAYER = NET AVANT IMPOT + FRAIS REMBOURSES
+    net_payable = net_before_tax + total_frais_rembourses
 
     return {
         "turnover": turnover,
@@ -632,8 +642,10 @@ with tab_simu:
         data_lines.append(("= Total Charges Salariales", -results['employee_charges'], "Total"))
         data_lines.append(("", 0, "Empty"))
 
-        # NET AVANT IMPOT = BRUT - CHARGES SAL + TOTAL FRAIS
-        data_lines.append(("= NET AVANT IMPOT", results['net_before_tax'], "Final"))
+        # NET AVANT IMPOT = BRUT - CHARGES SAL
+        data_lines.append(("= NET AVANT IMPOT", results['net_before_tax'], "Total"))
+        data_lines.append(("", 0, "Empty"))
+        data_lines.append(("= NET A PAYER (Net + Frais)", results['net_payable'], "Final"))
 
         df_disp = pd.DataFrame(data_lines, columns=["Libelle", "Montant", "Type"])
 
@@ -697,9 +709,16 @@ with tab_simu:
             st.markdown(f"""
 **NET AVANT IMPOT**
 ```
-= BRUT - CHARGES SALARIALES + TOTAL FRAIS
-= {results['gross_salary']:,.2f} - {results['employee_charges']:,.2f} + {results['total_frais_rembourses']:,.2f}
+= BRUT - CHARGES SALARIALES
+= {results['gross_salary']:,.2f} - {results['employee_charges']:,.2f}
 = {results['net_before_tax']:,.2f} EUR
+```
+
+**NET A PAYER**
+```
+= NET AVANT IMPOT + FRAIS REMBOURSES
+= {results['net_before_tax']:,.2f} + {results['total_frais_rembourses']:,.2f}
+= {results['net_payable']:,.2f} EUR
 ```
 
 **COUT GLOBAL SANS RESERVE**
@@ -711,8 +730,8 @@ with tab_simu:
 
 **RESERVE FINANCIERE**
 ```
-= MONTANT DISPONIBLE - COUT GLOBAL SANS RESERVE
-= {results['montant_disponible']:,.2f} - {results['cout_global_sans_reserve']:,.2f}
+= SALAIRE DE BASE x {st.session_state.cfg_taux_reserve}%
+= {results['base_salary']:,.2f} x {st.session_state.cfg_taux_reserve}%
 = {results['reserve_amount']:,.2f} EUR
 ```
             """)
@@ -800,31 +819,12 @@ with tab_config:
             value=st.session_state.cfg_seuil_reduit_smic, step=0.1
         )
 
-        st.divider()
-        st.markdown("#### Seuils Complements Patronaux")
-        st.session_state.cfg_seuil_maladie_smic = st.number_input(
-            "Seuil Complement Maladie (x SMIC)",
-            value=st.session_state.cfg_seuil_maladie_smic, step=0.05,
-            help="Au-dela de ce seuil, +6% de complement maladie"
-        )
-        st.session_state.cfg_seuil_af_smic = st.number_input(
-            "Seuil Complement AF (x SMIC)",
-            value=st.session_state.cfg_seuil_af_smic, step=0.1,
-            help="Au-dela de ce seuil, +1.8% de complement allocations familiales"
-        )
-
         limit_reduit = st.session_state.cfg_smic_mensuel * st.session_state.cfg_seuil_reduit_smic
-        limit_maladie = st.session_state.cfg_smic_mensuel * st.session_state.cfg_seuil_maladie_smic
-        limit_af = st.session_state.cfg_smic_mensuel * st.session_state.cfg_seuil_af_smic
 
         st.info(f"""
         **Paliers actuels :**
         < {limit_reduit:,.0f} EUR : Taux Reduit ({st.session_state.cfg_taux_pat_reduit}%)
         >= {limit_reduit:,.0f} EUR : Standard ({st.session_state.cfg_taux_pat}%)
-
-        **Complements si brut depasse :**
-        > {limit_maladie:,.0f} EUR : +6% Maladie
-        > {limit_af:,.0f} EUR : +1.8% AF
         """)
 
         st.divider()
@@ -959,11 +959,10 @@ with tab_comm:
 | Formation prof. | 1.00% | Totalite |
 | Taxe apprentissage | 0.68% | Totalite |
 | Prevoyance cadre | 1.50% | Tranche A |
-| **TOTAL simule** | **{taux_applique:.2f}%** | *Sur brut* |
 
 *PMSS 2026 = 4 005 EUR / SMIC 2026 = 1 823.03 EUR*
 
-**Note :** Le taux total est simule car certaines cotisations sont plafonnees (Tranche A = PMSS). Pour les bruts > PMSS, le taux effectif peut varier.
+**Note :** Certaines cotisations sont plafonnees (Tranche A = PMSS). Le taux applique dans le simulateur ({taux_applique:.2f}%) est un taux global sur le brut total.
             """)
 
         # Section 5 - Frais rembourses
@@ -992,11 +991,11 @@ with tab_comm:
         if use_reserve and results['reserve_amount'] > 0:
             st.markdown("### 7. La Reserve Financiere Provisionnee")
             st.markdown(f"""
-**RESERVE = MONTANT DISPONIBLE - COUT GLOBAL SANS RESERVE**
+**RESERVE = SALAIRE DE BASE x {st.session_state.cfg_taux_reserve}%**
 
-= {results['montant_disponible']:,.2f} - {results['cout_global_sans_reserve']:,.2f} = **{results['reserve_amount']:,.2f} EUR**
+= {results['base_salary']:,.2f} x {st.session_state.cfg_taux_reserve}% = **{results['reserve_amount']:,.2f} EUR**
 
-*Cet argent reste a vous ! Il sert a financer vos periodes d'intercontrat ou est verse en fin de contrat.*
+*Cet argent reste a vous ! Il sert a financer vos periodes d'intercontrat ou est verse en fin de contrat. Il est deduit du budget avant le calcul du brut.*
             """)
 
         # Section 8 - Charges salariales
@@ -1035,17 +1034,24 @@ with tab_comm:
 | Retraite AGIRC-ARRCO T2 | 8.64% | Tranche B |
 | CEG T1 | 0.86% | Tranche A |
 | CEG T2 | 1.08% | Tranche B |
-| **TOTAL simule** | **{taux_sal_applique:.2f}%** | *Sur brut* |
 
 *PMSS 2026 = 4 005 EUR / SMIC 2026 = 1 823.03 EUR*
+
+**Note :** Le taux applique dans le simulateur ({taux_sal_applique:.2f}%) est un taux global sur le brut total.
             """)
 
         # Section 9 - Net final
-        st.markdown("### 9. Le Net Avant Impot")
-        st.success(f"""
-**NET AVANT IMPOT = BRUT - CHARGES SALARIALES + TOTAL FRAIS**
+        st.markdown("### 9. Le Net Final")
+        st.markdown(f"""
+**NET AVANT IMPOT = BRUT - CHARGES SALARIALES**
 
-= {results['gross_salary']:,.2f} - {results['employee_charges']:,.2f} + {results['total_frais_rembourses']:,.2f} = **{results['net_before_tax']:,.2f} EUR**
+= {results['gross_salary']:,.2f} - {results['employee_charges']:,.2f} = **{results['net_before_tax']:,.2f} EUR**
+        """)
+
+        st.success(f"""
+**NET A PAYER = NET AVANT IMPOT + FRAIS REMBOURSES**
+
+= {results['net_before_tax']:,.2f} + {results['total_frais_rembourses']:,.2f} = **{results['net_payable']:,.2f} EUR**
         """)
 
     with c_mail:

@@ -292,32 +292,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
     reserve_brute = cfg_base * (days_worked_week / 5.0) * rate_reserve
 
-    # --- ETAPE 1 : Solver cotisations reelles -> brut reel ---
-    # Equation: budget = brut + charges_variables(brut)
-    couts_fixes_pat = mutuelle_part_pat + tr_part_pat
-    budget_solver = montant_disponible - total_frais_rembourses - couts_fixes_pat - reserve_brute
-
-    brut = budget_solver / 1.45  # estimation initiale
-    for _ in range(50):
-        ta = min(brut, pmss)
-        tb = max(0, brut - pmss)
-        prev_deces_pat = round(ta * 0.0159, 2)
-        prev_supp_pat = round(tb * 0.0073, 2) if tb > 0 else 0.0
-        prev_pat_total = prev_deces_pat + mutuelle_part_pat + prev_supp_pat
-
-        cotis = calculer_cotisations(brut, pmss, atmp_rate, fnal_rate, prev_pat_total)
-        forfait_social = round(prev_pat_total * 0.08, 2)
-
-        charges_variables = cotis["total_pat"] + forfait_social
-        brut_nouveau = budget_solver - charges_variables
-        if abs(brut_nouveau - brut) < 0.01:
-            brut = brut_nouveau
-            break
-        brut = brut_nouveau
-
-    gross_salary = brut
-
-    # --- ETAPE 2 : Taux de charges -> decomposition complement (methode Silae) ---
+    # --- Taux de charges -> complement + brut (methode Silae) ---
     # COMPLEMENT = ((MONTANT_DISPO / (1 + TAUX)) - BASE - PRIME - RESERVE) / (1 + taux_prime)
     budget_salaire = montant_disponible - total_frais_rembourses
     taux_charges_override = st.session_state.cfg_taux_charges_override / 100.0
@@ -347,18 +322,17 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 break
             taux_charges = tn
 
+    # Complement depuis le taux
     pool = budget_salaire / (1 + taux_charges)
-    complement_total_taux = max(0, pool - base_salary - prime_apport - reserve_brute)
-    complement_remuneration = complement_total_taux / (1 + rate_prime)
-    complement_apport_affaires = complement_total_taux - complement_remuneration
+    complement_total = max(0, pool - base_salary - prime_apport - reserve_brute)
+    complement_remuneration = complement_total / (1 + rate_prime)
+    complement_apport_affaires = complement_total - complement_remuneration
 
-    # Provision charges reserve = difference entre complement brut reel et complement taux
-    complement_total_brut = gross_salary / (1 + rate_cp) - base_salary - prime_apport
-    provision_charges_reserve = max(0, complement_total_brut - complement_total_taux)
+    # Brut = base + prime + complement + ICP (sans provision)
+    indemnite_cp = (base_salary + prime_apport + complement_total) * rate_cp
+    gross_salary = base_salary + prime_apport + complement_total + indemnite_cp
 
-    indemnite_cp = (base_salary + prime_apport + complement_total_brut) * rate_cp
-
-    # Recalcul final avec le brut exact
+    # Cotisations reelles sur le brut
     tranche_a = min(gross_salary, pmss)
     tranche_b = max(0, gross_salary - pmss)
 
@@ -380,6 +354,9 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
 
     # Charges salariales totales
     employee_charges = cotis["total_sal"] + mutuelle_part_sal + tr_part_sal
+
+    # Provision charges reserve = residuel du budget (charges futures sur la reserve)
+    provision_charges_reserve = max(0, budget_salaire - gross_salary - employer_charges - reserve_brute)
 
     # Cout global
     cout_global_sans_reserve = gross_salary + employer_charges + total_frais_rembourses
@@ -485,9 +462,6 @@ def create_pdf(data, name):
     pdf.cell(50, 8, txt=f"{data['complement_remuneration']:,.2f} EUR", border=0, align='R', ln=1)
     pdf.cell(140, 8, txt="Complement Apport d'Affaires", border=0)
     pdf.cell(50, 8, txt=f"{data['complement_apport_affaires']:,.2f} EUR", border=0, align='R', ln=1)
-    if data.get('provision_charges_reserve', 0) > 0:
-        pdf.cell(140, 8, txt="Provision charges reserve", border=0)
-        pdf.cell(50, 8, txt=f"{data['provision_charges_reserve']:,.2f} EUR", border=0, align='R', ln=1)
     pdf.cell(140, 8, txt="Indemnite Conges Payes", border=0)
     pdf.cell(50, 8, txt=f"{data['indemnite_cp']:,.2f} EUR", border=0, align='R', ln=1)
 
@@ -540,6 +514,9 @@ def create_pdf(data, name):
     pdf.set_font("Arial", size=11)
     pdf.cell(140, 8, txt="Reserve Financiere Provisionnee", border=0)
     pdf.cell(50, 8, txt=f"{data['reserve_amount']:,.2f} EUR", border=0, align='R', ln=1)
+    if data.get('provision_charges_reserve', 0) > 0:
+        pdf.cell(140, 8, txt="Provision charges sur reserve", border=0)
+        pdf.cell(50, 8, txt=f"{data['provision_charges_reserve']:,.2f} EUR", border=0, align='R', ln=1)
 
     pdf.set_font("Arial", 'B', size=11)
     pdf.cell(140, 8, txt="= COUT GLOBAL SANS RESERVE", border='T')
@@ -772,10 +749,6 @@ with tab_simu:
             ("Prime d'apport d'affaires", results['prime_apport'], "Detail"),
             ("Complement de remuneration", results['complement_remuneration'], "Detail"),
             ("Complement Apport d'Affaires", results['complement_apport_affaires'], "Detail"),
-        ])
-        if results.get('provision_charges_reserve', 0) > 0:
-            data_lines.append(("Provision charges reserve", results['provision_charges_reserve'], "Detail"))
-        data_lines.extend([
             ("Indemnite Conges Payes", results['indemnite_cp'], "Detail"),
             ("= TOTAL BRUT", results['gross_salary'], "Total"),
             ("", 0, "Empty"),
@@ -785,6 +758,9 @@ with tab_simu:
         reserve_display = -results['reserve_amount'] if use_reserve else results['reserve_amount']
         reserve_label = "Reserve Financiere Provisionnee chargee" if use_reserve else "Reserve Financiere reintegree"
         data_lines.append((reserve_label, reserve_display, "Negatif" if use_reserve else "Positif"))
+
+        if results.get('provision_charges_reserve', 0) > 0:
+            data_lines.append(("Provision charges sur reserve", -results['provision_charges_reserve'], "Negatif"))
 
         data_lines.append(("Mutuelle Part Patronale", results['mutuelle_part_pat'], "Detail"))
 
@@ -1087,15 +1063,14 @@ with tab_comm:
         txt_brut = f"""- Salaire de Base (fixe) : **{results['base_salary']:,.2f} EUR**
 - Prime Apport d'Affaires (5% du base) : **{results['prime_apport']:,.2f} EUR**
 - Complement de Remuneration (variable) : **{results['complement_remuneration']:,.2f} EUR**
-- Complement Apport d'Affaires (5% du complement) : **{results['complement_apport_affaires']:,.2f} EUR**"""
-        if results.get('provision_charges_reserve', 0) > 0:
-            txt_brut += f"\n- Provision charges reserve : **{results['provision_charges_reserve']:,.2f} EUR**"
-        txt_brut += f"""
+- Complement Apport d'Affaires (5% du complement) : **{results['complement_apport_affaires']:,.2f} EUR**
 - Indemnite Conges Payes (10%) : **{results['indemnite_cp']:,.2f} EUR**
 
 = **Salaire Brut Total : {results['gross_salary']:,.2f} EUR**
 
 *Tranches : A = {results['tranche_a']:,.2f} EUR (PMSS) | B = {results['tranche_b']:,.2f} EUR*"""
+        if results.get('provision_charges_reserve', 0) > 0:
+            txt_brut += f"\n\n*Provision charges sur reserve : {results['provision_charges_reserve']:,.2f} EUR (hors brut, provisionne separement)*"
         st.markdown(txt_brut)
 
         # Section 4 - Charges patronales (ligne par ligne)
@@ -1297,8 +1272,7 @@ Detail du calcul :
 - Salaire de Base : {results['base_salary']:,.2f} EUR
 - Prime d'apport d'affaires : {results['prime_apport']:,.2f} EUR
 - Complement de remuneration : {results['complement_remuneration']:,.2f} EUR
-- Complement Apport d'Affaires : {results['complement_apport_affaires']:,.2f} EUR{"" if results.get('provision_charges_reserve', 0) == 0 else f"""
-- Provision charges reserve : {results['provision_charges_reserve']:,.2f} EUR"""}
+- Complement Apport d'Affaires : {results['complement_apport_affaires']:,.2f} EUR
 - Indemnite Conges Payes : {results['indemnite_cp']:,.2f} EUR
 = Salaire Brut Total : {results['gross_salary']:,.2f} EUR
 - Charges Salariales : {results['employee_charges']:,.2f} EUR

@@ -300,7 +300,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     if taux_charges_override > 0:
         taux_charges = taux_charges_override
     else:
-        # Auto-calcul du taux (incluant charges sur reserve)
+        # Auto-calcul du taux (incluant charges marginales sur reserve)
         taux_charges = 0.55
         for _ in range(50):
             pool = budget_salaire / (1 + taux_charges)
@@ -315,7 +315,17 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
             fs_ = round(pt_ * 0.08, 2)
             icp_ = brut_est - (base_salary + prime_apport + ct_est)
             ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
-            ch_reserve = reserve_brute * taux_charges
+            # Charges marginales sur reserve: cotisations reelles sur brut+reserve vs brut seul
+            reserve_brut = reserve_brute * (1 + rate_cp)
+            brut_avec_reserve = brut_est + reserve_brut
+            ta2 = min(brut_avec_reserve, pmss)
+            tb2 = max(0, brut_avec_reserve - pmss)
+            pd2 = round(ta2 * 0.0159, 2)
+            ps2 = round(tb2 * 0.0073, 2) if tb2 > 0 else 0.0
+            pt2 = pd2 + mutuelle_part_pat + ps2
+            c2_ = calculer_cotisations(brut_avec_reserve, pmss, atmp_rate, fnal_rate, pt2)
+            fs2 = round(pt2 * 0.08, 2)
+            ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + reserve_brute * rate_cp
             tn = (ch_brut + ch_reserve) / pool if pool > 0 else 0
             if abs(tn - taux_charges) < 0.00001:
                 taux_charges = tn

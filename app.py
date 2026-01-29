@@ -365,8 +365,9 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     # Charges salariales totales
     employee_charges = cotis["total_sal"] + mutuelle_part_sal + tr_part_sal
 
-    # Provision charges reserve = residuel du budget (charges futures sur la reserve)
-    provision_charges_reserve = max(0, budget_salaire - gross_salary - employer_charges - reserve_brute)
+    # Provision reserve financiere = MONTANT DISPO - (brut + charges pat)
+    # Inclut la reserve brute + les charges futures sur la reserve
+    provision_reserve_financiere = max(0, budget_salaire - gross_salary - employer_charges)
 
     # Cout global
     cout_global_sans_reserve = gross_salary + employer_charges + total_frais_rembourses
@@ -418,7 +419,8 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "effectif_sup_50": effectif_sup_50,
         "taux_charges": taux_charges,
         "pool_silae": pool,
-        "provision_charges_reserve": provision_charges_reserve,
+        "provision_reserve_financiere": provision_reserve_financiere,
+        "budget_salaire": budget_salaire,
     }
 
 # --- PDF Generation ---
@@ -520,13 +522,11 @@ def create_pdf(data, name):
     pdf.cell(30, 8, txt=f"{data['employer_charges']:,.2f} EUR", border='T', align='R', ln=1)
     pdf.ln(3)
 
-    # --- Reserve ---
+    # --- Provision Reserve Financiere ---
     pdf.set_font("Arial", size=11)
-    pdf.cell(140, 8, txt="Reserve Financiere Provisionnee", border=0)
-    pdf.cell(50, 8, txt=f"{data['reserve_amount']:,.2f} EUR", border=0, align='R', ln=1)
-    if data.get('provision_charges_reserve', 0) > 0:
-        pdf.cell(140, 8, txt="Provision charges sur reserve", border=0)
-        pdf.cell(50, 8, txt=f"{data['provision_charges_reserve']:,.2f} EUR", border=0, align='R', ln=1)
+    if data.get('provision_reserve_financiere', 0) > 0:
+        pdf.cell(140, 8, txt="Provision Reserve Financiere", border=0)
+        pdf.cell(50, 8, txt=f"{data['provision_reserve_financiere']:,.2f} EUR", border=0, align='R', ln=1)
 
     pdf.set_font("Arial", 'B', size=11)
     pdf.cell(140, 8, txt="= COUT GLOBAL SANS RESERVE", border='T')
@@ -764,13 +764,9 @@ with tab_simu:
             ("", 0, "Empty"),
         ])
 
-        # Reserve financiere
-        reserve_display = -results['reserve_amount'] if use_reserve else results['reserve_amount']
-        reserve_label = "Reserve Financiere Provisionnee chargee" if use_reserve else "Reserve Financiere reintegree"
-        data_lines.append((reserve_label, reserve_display, "Negatif" if use_reserve else "Positif"))
-
-        if results.get('provision_charges_reserve', 0) > 0:
-            data_lines.append(("Provision charges sur reserve", -results['provision_charges_reserve'], "Negatif"))
+        # Provision reserve financiere (Silae: MONTANT DISPO - brut - charges pat)
+        if use_reserve and results.get('provision_reserve_financiere', 0) > 0:
+            data_lines.append(("Provision Reserve Financiere", -results['provision_reserve_financiere'], "Negatif"))
 
         data_lines.append(("Mutuelle Part Patronale", results['mutuelle_part_pat'], "Detail"))
 
@@ -913,12 +909,13 @@ with tab_simu:
 = {results['cout_global_sans_reserve']:,.2f} EUR
 ```
 
-**RESERVE FINANCIERE**
+**PROVISION RESERVE FINANCIERE**
 ```
-= SALAIRE DE BASE x {st.session_state.cfg_taux_reserve}%
-= {results['base_salary']:,.2f} x {st.session_state.cfg_taux_reserve}%
-= {results['reserve_amount']:,.2f} EUR
+= MONTANT DISPO - (BRUT + CHARGES PAT)
+= {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
+= {results['provision_reserve_financiere']:,.2f} EUR
 ```
+*(dont reserve brute {results['reserve_amount']:,.2f} EUR + charges futures {results['provision_reserve_financiere'] - results['reserve_amount']:,.2f} EUR)*
             """)
 
     with col_viz:
@@ -927,12 +924,12 @@ with tab_simu:
                          + results['forfait_social'] - results['reduction_rgdu'])
         charges_mutuelle_tr = (results['mutuelle_part_pat'] + results['mutuelle_part_sal']
                                + results['tr_part_pat'] + results['tr_part_sal'])
-        labels = ['Net Avant Impot', 'Cotisations Sociales', 'Mutuelle & TR', 'Frais Gestion', 'Reserve']
+        labels = ['Net Avant Impot', 'Cotisations Sociales', 'Mutuelle & TR', 'Frais Gestion', 'Provision Reserve']
         values = [results['net_before_tax'],
                   charges_cotis,
                   charges_mutuelle_tr,
                   results['management_fees'] + results['frais_intermediation'],
-                  results['reserve_amount']]
+                  results.get('provision_reserve_financiere', 0)]
 
         fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4)])
         fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
@@ -1079,8 +1076,8 @@ with tab_comm:
 = **Salaire Brut Total : {results['gross_salary']:,.2f} EUR**
 
 *Tranches : A = {results['tranche_a']:,.2f} EUR (PMSS) | B = {results['tranche_b']:,.2f} EUR*"""
-        if results.get('provision_charges_reserve', 0) > 0:
-            txt_brut += f"\n\n*Provision charges sur reserve : {results['provision_charges_reserve']:,.2f} EUR (hors brut, provisionne separement)*"
+        if results.get('provision_reserve_financiere', 0) > 0:
+            txt_brut += f"\n\n*Provision Reserve Financiere : {results['provision_reserve_financiere']:,.2f} EUR (reserve + charges futures, hors brut)*"
         st.markdown(txt_brut)
 
         # Section 4 - Charges patronales (ligne par ligne)
@@ -1156,14 +1153,18 @@ with tab_comm:
         """)
 
         # Section 7 - Reserve
-        if use_reserve and results['reserve_amount'] > 0:
-            st.markdown("### 7. La Reserve Financiere Provisionnee")
+        if use_reserve and results.get('provision_reserve_financiere', 0) > 0:
+            st.markdown("### 7. La Provision Reserve Financiere")
             st.markdown(f"""
-**RESERVE = SALAIRE DE BASE x {st.session_state.cfg_taux_reserve}%**
+**PROVISION RESERVE FINANCIERE = MONTANT DISPO - (BRUT + CHARGES PAT)**
 
-= {results['base_salary']:,.2f} x {st.session_state.cfg_taux_reserve}% = **{results['reserve_amount']:,.2f} EUR**
+= {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
+= **{results['provision_reserve_financiere']:,.2f} EUR**
 
-*Cet argent reste a vous ! Il sert a financer vos periodes d'intercontrat ou est verse en fin de contrat. Il est deduit du budget avant le calcul du brut.*
+*Dont reserve brute : {results['reserve_amount']:,.2f} EUR (base x {st.session_state.cfg_taux_reserve}%)*
+*Dont charges futures sur reserve : {results['provision_reserve_financiere'] - results['reserve_amount']:,.2f} EUR*
+
+*Cet argent reste a vous ! Il sert a financer vos periodes d'intercontrat ou est verse en fin de contrat.*
             """)
 
         # Section 8 - Charges salariales (ligne par ligne)

@@ -292,66 +292,71 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
     reserve_brute = cfg_base * (days_worked_week / 5.0) * rate_reserve
 
-    # --- Calcul du taux de charges patronales (methode Silae) ---
-    # budget_salaire = montant_disponible - frais
-    # pool = budget_salaire / (1 + taux_charges)
-    # COMPLEMENT = (pool - BASE - PRIME - RESERVE) / (1 + taux_prime)
-    budget_salaire = montant_disponible - total_frais_rembourses
+    # --- ETAPE 1 : Solver cotisations reelles -> brut reel ---
+    # Equation: budget = brut + charges_variables(brut)
+    couts_fixes_pat = mutuelle_part_pat + tr_part_pat
+    budget_solver = montant_disponible - total_frais_rembourses - couts_fixes_pat - reserve_brute
 
+    brut = budget_solver / 1.45  # estimation initiale
+    for _ in range(50):
+        ta = min(brut, pmss)
+        tb = max(0, brut - pmss)
+        prev_deces_pat = round(ta * 0.0159, 2)
+        prev_supp_pat = round(tb * 0.0073, 2) if tb > 0 else 0.0
+        prev_pat_total = prev_deces_pat + mutuelle_part_pat + prev_supp_pat
+
+        cotis = calculer_cotisations(brut, pmss, atmp_rate, fnal_rate, prev_pat_total)
+        forfait_social = round(prev_pat_total * 0.08, 2)
+
+        charges_variables = cotis["total_pat"] + forfait_social
+        brut_nouveau = budget_solver - charges_variables
+        if abs(brut_nouveau - brut) < 0.01:
+            brut = brut_nouveau
+            break
+        brut = brut_nouveau
+
+    gross_salary = brut
+
+    # --- ETAPE 2 : Taux de charges -> decomposition complement (methode Silae) ---
+    # COMPLEMENT = ((MONTANT_DISPO / (1 + TAUX)) - BASE - PRIME - RESERVE) / (1 + taux_prime)
+    budget_salaire = montant_disponible - total_frais_rembourses
     taux_charges_override = st.session_state.cfg_taux_charges_override / 100.0
 
     if taux_charges_override > 0:
-        # Taux configure manuellement (pour matcher Silae exactement)
         taux_charges = taux_charges_override
     else:
-        # Calcul automatique : iteration incluant charges sur reserve
-        taux_charges = 0.55  # estimation initiale
+        # Auto-calcul du taux (incluant charges sur reserve)
+        taux_charges = 0.55
         for _ in range(50):
             pool = budget_salaire / (1 + taux_charges)
-
-            # Du pool, deriver le brut
-            complement_total_est = max(0, pool - base_salary - prime_apport - reserve_brute)
-            brut_est = (base_salary + prime_apport + complement_total_est) * (1 + rate_cp)
-
-            # Cotisations patronales sur le brut estime
+            ct_est = max(0, pool - base_salary - prime_apport - reserve_brute)
+            brut_est = (base_salary + prime_apport + ct_est) * (1 + rate_cp)
             ta = min(brut_est, pmss)
             tb = max(0, brut_est - pmss)
-            prev_deces_pat = round(ta * 0.0159, 2)
-            prev_supp_pat = round(tb * 0.0073, 2) if tb > 0 else 0.0
-            prev_pat_total = prev_deces_pat + mutuelle_part_pat + prev_supp_pat
-
-            cotis = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, prev_pat_total)
-            forfait_social = round(prev_pat_total * 0.08, 2)
-
-            # ICP (Indemnite Conges Payes)
-            icp = brut_est - (base_salary + prime_apport + complement_total_est)
-
-            # Charges sur le brut = cotis_pat + mutuelle + TR + forfait + ICP
-            charges_brut = cotis["total_pat"] + mutuelle_part_pat + tr_part_pat + forfait_social + icp
-
-            # Charges sur la reserve (provision: la reserve generera des charges quand versee)
-            charges_reserve = reserve_brute * taux_charges
-
-            # Charges totales
-            charges_totales = charges_brut + charges_reserve
-
-            # Nouveau taux
-            taux_nouveau = charges_totales / pool if pool > 0 else 0
-            if abs(taux_nouveau - taux_charges) < 0.00001:
-                taux_charges = taux_nouveau
+            pd_ = round(ta * 0.0159, 2)
+            ps_ = round(tb * 0.0073, 2) if tb > 0 else 0.0
+            pt_ = pd_ + mutuelle_part_pat + ps_
+            c_ = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, pt_)
+            fs_ = round(pt_ * 0.08, 2)
+            icp_ = brut_est - (base_salary + prime_apport + ct_est)
+            ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
+            ch_reserve = reserve_brute * taux_charges
+            tn = (ch_brut + ch_reserve) / pool if pool > 0 else 0
+            if abs(tn - taux_charges) < 0.00001:
+                taux_charges = tn
                 break
-            taux_charges = taux_nouveau
+            taux_charges = tn
 
-    # --- Application formule Silae ---
-    # COMPLEMENT = ((MONTANT_DISPO / (1 + TAUX)) - BASE - PRIME - RESERVE) / (1 + taux_prime)
     pool = budget_salaire / (1 + taux_charges)
-    complement_total = max(0, pool - base_salary - prime_apport - reserve_brute)
+    complement_total_taux = max(0, pool - base_salary - prime_apport - reserve_brute)
+    complement_remuneration = complement_total_taux / (1 + rate_prime)
+    complement_apport_affaires = complement_total_taux - complement_remuneration
 
-    complement_remuneration = complement_total / (1 + rate_prime)
-    complement_apport_affaires = complement_total - complement_remuneration
+    # Provision charges reserve = difference entre complement brut reel et complement taux
+    complement_total_brut = gross_salary / (1 + rate_cp) - base_salary - prime_apport
+    provision_charges_reserve = max(0, complement_total_brut - complement_total_taux)
 
-    indemnite_cp = (base_salary + prime_apport + complement_total) * rate_cp
-    gross_salary = base_salary + prime_apport + complement_total + indemnite_cp
+    indemnite_cp = (base_salary + prime_apport + complement_total_brut) * rate_cp
 
     # Recalcul final avec le brut exact
     tranche_a = min(gross_salary, pmss)
@@ -426,6 +431,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "effectif_sup_50": effectif_sup_50,
         "taux_charges": taux_charges,
         "pool_silae": pool,
+        "provision_charges_reserve": provision_charges_reserve,
     }
 
 # --- PDF Generation ---
@@ -479,6 +485,9 @@ def create_pdf(data, name):
     pdf.cell(50, 8, txt=f"{data['complement_remuneration']:,.2f} EUR", border=0, align='R', ln=1)
     pdf.cell(140, 8, txt="Complement Apport d'Affaires", border=0)
     pdf.cell(50, 8, txt=f"{data['complement_apport_affaires']:,.2f} EUR", border=0, align='R', ln=1)
+    if data.get('provision_charges_reserve', 0) > 0:
+        pdf.cell(140, 8, txt="Provision charges reserve", border=0)
+        pdf.cell(50, 8, txt=f"{data['provision_charges_reserve']:,.2f} EUR", border=0, align='R', ln=1)
     pdf.cell(140, 8, txt="Indemnite Conges Payes", border=0)
     pdf.cell(50, 8, txt=f"{data['indemnite_cp']:,.2f} EUR", border=0, align='R', ln=1)
 
@@ -763,6 +772,10 @@ with tab_simu:
             ("Prime d'apport d'affaires", results['prime_apport'], "Detail"),
             ("Complement de remuneration", results['complement_remuneration'], "Detail"),
             ("Complement Apport d'Affaires", results['complement_apport_affaires'], "Detail"),
+        ])
+        if results.get('provision_charges_reserve', 0) > 0:
+            data_lines.append(("Provision charges reserve", results['provision_charges_reserve'], "Detail"))
+        data_lines.extend([
             ("Indemnite Conges Payes", results['indemnite_cp'], "Detail"),
             ("= TOTAL BRUT", results['gross_salary'], "Total"),
             ("", 0, "Empty"),
@@ -1071,17 +1084,19 @@ with tab_comm:
 
         # Section 3 - Construction du brut
         st.markdown("### 3. La Construction du Brut")
-        st.markdown(f"""
-- Salaire de Base (fixe) : **{results['base_salary']:,.2f} EUR**
+        txt_brut = f"""- Salaire de Base (fixe) : **{results['base_salary']:,.2f} EUR**
 - Prime Apport d'Affaires (5% du base) : **{results['prime_apport']:,.2f} EUR**
 - Complement de Remuneration (variable) : **{results['complement_remuneration']:,.2f} EUR**
-- Complement Apport d'Affaires (5% du complement) : **{results['complement_apport_affaires']:,.2f} EUR**
+- Complement Apport d'Affaires (5% du complement) : **{results['complement_apport_affaires']:,.2f} EUR**"""
+        if results.get('provision_charges_reserve', 0) > 0:
+            txt_brut += f"\n- Provision charges reserve : **{results['provision_charges_reserve']:,.2f} EUR**"
+        txt_brut += f"""
 - Indemnite Conges Payes (10%) : **{results['indemnite_cp']:,.2f} EUR**
 
 = **Salaire Brut Total : {results['gross_salary']:,.2f} EUR**
 
-*Tranches : A = {results['tranche_a']:,.2f} EUR (PMSS) | B = {results['tranche_b']:,.2f} EUR*
-        """)
+*Tranches : A = {results['tranche_a']:,.2f} EUR (PMSS) | B = {results['tranche_b']:,.2f} EUR*"""
+        st.markdown(txt_brut)
 
         # Section 4 - Charges patronales (ligne par ligne)
         st.markdown("### 4. Les Charges Patronales (ligne par ligne)")

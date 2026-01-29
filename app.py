@@ -138,6 +138,8 @@ if 'cfg_smic_mensuel' not in st.session_state:
     st.session_state.cfg_smic_mensuel = 1823.03
 if 'cfg_taux_atmp' not in st.session_state:
     st.session_state.cfg_taux_atmp = 0.64
+if 'cfg_taux_charges_override' not in st.session_state:
+    st.session_state.cfg_taux_charges_override = 0.0  # 0 = auto-calcul
 
 
 # --- Fonction RGDU ---
@@ -290,44 +292,66 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
     reserve_brute = cfg_base * (days_worked_week / 5.0) * rate_reserve
 
-    # Budget pour le brut : on soustrait les couts fixes (mutuelle pat, TR pat)
-    couts_fixes_pat = mutuelle_part_pat + tr_part_pat
-    budget = montant_disponible - total_frais_rembourses - couts_fixes_pat - reserve_brute
+    # --- Calcul du taux de charges patronales (methode Silae) ---
+    # budget_salaire = montant_disponible - frais
+    # pool = budget_salaire / (1 + taux_charges)
+    # COMPLEMENT = (pool - BASE - PRIME - RESERVE) / (1 + taux_prime)
+    budget_salaire = montant_disponible - total_frais_rembourses
 
-    # --- Solve iteratif : budget = brut + cotis_pat(brut) + forfait_social(brut) ---
-    brut = budget / 1.45  # estimation initiale
-    for _ in range(50):
-        ta = min(brut, pmss)
-        tb = max(0, brut - pmss)
+    taux_charges_override = st.session_state.cfg_taux_charges_override / 100.0
 
-        # Pre-calcul contributions prevoyance patronales (pour base CSG + forfait social)
-        prev_deces_pat = round(ta * 0.0159, 2)
-        prev_supp_pat = round(tb * 0.0073, 2) if tb > 0 else 0.0
-        prev_pat_total = prev_deces_pat + mutuelle_part_pat + prev_supp_pat
+    if taux_charges_override > 0:
+        # Taux configure manuellement (pour matcher Silae exactement)
+        taux_charges = taux_charges_override
+    else:
+        # Calcul automatique : iteration incluant charges sur reserve
+        taux_charges = 0.55  # estimation initiale
+        for _ in range(50):
+            pool = budget_salaire / (1 + taux_charges)
 
-        cotis = calculer_cotisations(brut, pmss, atmp_rate, fnal_rate, prev_pat_total)
-        forfait_social = round(prev_pat_total * 0.08, 2)
+            # Du pool, deriver le brut
+            complement_total_est = max(0, pool - base_salary - prime_apport - reserve_brute)
+            brut_est = (base_salary + prime_apport + complement_total_est) * (1 + rate_cp)
 
-        charges_variables = cotis["total_pat"] + forfait_social
-        brut_nouveau = budget - charges_variables
-        if abs(brut_nouveau - brut) < 0.01:
-            brut = brut_nouveau
-            break
-        brut = brut_nouveau
+            # Cotisations patronales sur le brut estime
+            ta = min(brut_est, pmss)
+            tb = max(0, brut_est - pmss)
+            prev_deces_pat = round(ta * 0.0159, 2)
+            prev_supp_pat = round(tb * 0.0073, 2) if tb > 0 else 0.0
+            prev_pat_total = prev_deces_pat + mutuelle_part_pat + prev_supp_pat
 
-    # Decomposition du brut en composantes
-    base_prime_complement = brut / (1 + rate_cp)
-    complement_total = base_prime_complement - base_salary - prime_apport
+            cotis = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, prev_pat_total)
+            forfait_social = round(prev_pat_total * 0.08, 2)
 
-    if complement_total < 0:
-        complement_total = 0
+            # ICP (Indemnite Conges Payes)
+            icp = brut_est - (base_salary + prime_apport + complement_total_est)
 
-    # Separation complement remuneration / complement apport affaires (regle 1/1.05)
-    complement_remuneration = complement_total / 1.05
+            # Charges sur le brut = cotis_pat + mutuelle + TR + forfait + ICP
+            charges_brut = cotis["total_pat"] + mutuelle_part_pat + tr_part_pat + forfait_social + icp
+
+            # Charges sur la reserve (provision: la reserve generera des charges quand versee)
+            charges_reserve = reserve_brute * taux_charges
+
+            # Charges totales
+            charges_totales = charges_brut + charges_reserve
+
+            # Nouveau taux
+            taux_nouveau = charges_totales / pool if pool > 0 else 0
+            if abs(taux_nouveau - taux_charges) < 0.00001:
+                taux_charges = taux_nouveau
+                break
+            taux_charges = taux_nouveau
+
+    # --- Application formule Silae ---
+    # COMPLEMENT = ((MONTANT_DISPO / (1 + TAUX)) - BASE - PRIME - RESERVE) / (1 + taux_prime)
+    pool = budget_salaire / (1 + taux_charges)
+    complement_total = max(0, pool - base_salary - prime_apport - reserve_brute)
+
+    complement_remuneration = complement_total / (1 + rate_prime)
     complement_apport_affaires = complement_total - complement_remuneration
 
-    indemnite_cp = (base_salary + prime_apport + complement_remuneration + complement_apport_affaires) * rate_cp
-    gross_salary = base_salary + prime_apport + complement_remuneration + complement_apport_affaires + indemnite_cp
+    indemnite_cp = (base_salary + prime_apport + complement_total) * rate_cp
+    gross_salary = base_salary + prime_apport + complement_total + indemnite_cp
 
     # Recalcul final avec le brut exact
     tranche_a = min(gross_salary, pmss)
@@ -400,6 +424,8 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "net_before_tax": net_before_tax,
         "net_payable": net_payable,
         "effectif_sup_50": effectif_sup_50,
+        "taux_charges": taux_charges,
+        "pool_silae": pool,
     }
 
 # --- PDF Generation ---
@@ -806,7 +832,8 @@ with tab_simu:
             effectif_label = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
             fnal_rate_txt = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
 
-            st.info(f"**Effectif : {effectif_label}** | FNAL {fnal_rate_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}%")
+            taux_source = "configure" if st.session_state.cfg_taux_charges_override > 0 else "calcule"
+            st.info(f"**Effectif : {effectif_label}** | FNAL {fnal_rate_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}% | Taux de charges : {results['taux_charges']*100:.2f}% ({taux_source})")
 
             pat_lines = [d for d in results['cotis_details'] if d['montant_pat'] > 0]
             df_pat = pd.DataFrame([{
@@ -953,6 +980,11 @@ with tab_config:
             "Taux AT/MP (%)",
             value=st.session_state.cfg_taux_atmp, format="%.2f", step=0.01,
             help="Accident du Travail / Maladie Professionnelle. Seul taux patronal modifiable."
+        )
+        st.session_state.cfg_taux_charges_override = st.number_input(
+            "Taux de charges (%)", min_value=0.0,
+            value=st.session_state.cfg_taux_charges_override, format="%.2f", step=0.01,
+            help="0 = auto-calcul. Saisir le taux Silae (ex: 58.61) pour matcher exactement."
         )
 
         fnal_effectif = "0.10% (< 50 sal.)" if not effectif_sup_50 else "0.50% (>= 50 sal.)"

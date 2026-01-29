@@ -975,15 +975,15 @@ with tab_config:
 
     with c2:
         st.subheader("Cotisations & References")
+        st.session_state.cfg_taux_charges_override = st.number_input(
+            "TAUX DE CHARGES Silae (%)", min_value=0.0,
+            value=st.session_state.cfg_taux_charges_override, format="%.4f", step=0.0001,
+            help="0 = auto-calcul. Saisir le taux Silae pour matcher le complement de remuneration exactement."
+        )
         st.session_state.cfg_taux_atmp = st.number_input(
             "Taux AT/MP (%)",
             value=st.session_state.cfg_taux_atmp, format="%.2f", step=0.01,
             help="Accident du Travail / Maladie Professionnelle. Seul taux patronal modifiable."
-        )
-        st.session_state.cfg_taux_charges_override = st.number_input(
-            "Taux de charges (%)", min_value=0.0,
-            value=st.session_state.cfg_taux_charges_override, format="%.4f", step=0.0001,
-            help="0 = auto-calcul. Saisir le taux Silae (ex: 58.6076) pour matcher exactement."
         )
 
         fnal_effectif = "0.10% (< 50 sal.)" if not effectif_sup_50 else "0.50% (>= 50 sal.)"

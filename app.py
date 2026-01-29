@@ -30,44 +30,6 @@ IGD_NUITEE_PARIS = 76.70
 TR_VALEUR_FACIALE = 14.36
 TR_PART_PATRONALE_MAX = 7.18
 
-# --- Initialisation des Variables (Session State) ---
-if 'cfg_base_salary' not in st.session_state:
-    st.session_state.cfg_base_salary = 2374.0
-if 'cfg_frais_gestion' not in st.session_state:
-    st.session_state.cfg_frais_gestion = 5.0
-if 'cfg_frais_intermediation' not in st.session_state:
-    st.session_state.cfg_frais_intermediation = 0.0
-if 'cfg_taux_prime' not in st.session_state:
-    st.session_state.cfg_taux_prime = 5.0
-if 'cfg_taux_reserve' not in st.session_state:
-    st.session_state.cfg_taux_reserve = 10.0
-if 'cfg_taux_cp' not in st.session_state:
-    st.session_state.cfg_taux_cp = 10.0
-if 'cfg_taux_pat' not in st.session_state:
-    st.session_state.cfg_taux_pat = 46.69
-if 'cfg_taux_sal' not in st.session_state:
-    st.session_state.cfg_taux_sal = 23.56
-if 'cfg_ik_rate' not in st.session_state:
-    st.session_state.cfg_ik_rate = 0.636  # Par defaut 5CV, tranche 1
-if 'cfg_pmss' not in st.session_state:
-    st.session_state.cfg_pmss = 4005.0 # Valeur 2026
-if 'cfg_mutuelle_taux' not in st.session_state:
-    st.session_state.cfg_mutuelle_taux = 1.5
-if 'cfg_mutuelle_part_pat' not in st.session_state:
-    st.session_state.cfg_mutuelle_part_pat = 50.0
-if 'cfg_smic_mensuel' not in st.session_state:
-    st.session_state.cfg_smic_mensuel = 1823.03 # Valeur 2026
-if 'cfg_taux_pat_reduit' not in st.session_state:
-    st.session_state.cfg_taux_pat_reduit = 41.00
-if 'cfg_seuil_reduit_smic' not in st.session_state:
-    st.session_state.cfg_seuil_reduit_smic = 2.5
-if 'cfg_seuil_maladie_smic' not in st.session_state:
-    st.session_state.cfg_seuil_maladie_smic = 2.25
-if 'cfg_seuil_af_smic' not in st.session_state:
-    st.session_state.cfg_seuil_af_smic = 3.3
-if 'cfg_taux_atmp' not in st.session_state:
-    st.session_state.cfg_taux_atmp = 0.64  # Taux AT/MP portage salarial
-
 # --- Constantes Forfait Teletravail ---
 TELETRAVAIL_TAUX_JOUR = 2.70  # EUR par jour
 TELETRAVAIL_MAX_JOURS = 22    # Maximum 22 jours
@@ -82,6 +44,101 @@ RGDU_SEUIL_SMIC = 3.0  # Jusqu'a 3 SMIC
 # --- Taux FNAL selon effectif ---
 FNAL_TAUX_SUP_50 = 0.0050  # 0.50% pour >= 50 salaries
 FNAL_TAUX_INF_50 = 0.0010  # 0.10% pour < 50 salaries
+
+# --- COTISATIONS 2026 (ligne par ligne comme Silae) ---
+COTISATIONS_2026 = {
+    # PATRONALES SUR TOTALITE
+    "maladie":       {"pat": 0.0700, "sal": 0.0,    "base": "TOTALITE"},
+    "maladie_compl": {"pat": 0.0600, "sal": 0.0,    "base": "TOTALITE"},
+    "csa":           {"pat": 0.0030, "sal": 0.0,    "base": "TOTALITE"},
+    "vieillesse_dep":{"pat": 0.0211, "sal": 0.0040, "base": "TOTALITE"},
+    "af":            {"pat": 0.0345, "sal": 0.0,    "base": "TOTALITE"},
+    "af_compl":      {"pat": 0.0180, "sal": 0.0,    "base": "TOTALITE"},
+    "atmp":          {"pat": 0.0064, "sal": 0.0,    "base": "TOTALITE"},
+    "chomage":       {"pat": 0.0400, "sal": 0.0,    "base": "TOTALITE"},
+    "ags":           {"pat": 0.0025, "sal": 0.0,    "base": "TOTALITE"},
+    "formation":     {"pat": 0.0100, "sal": 0.0,    "base": "TOTALITE"},
+    "taxe_appr":     {"pat": 0.0059, "sal": 0.0,    "base": "TOTALITE"},
+    "taxe_appr_lib": {"pat": 0.0009, "sal": 0.0,    "base": "TOTALITE"},
+    "dialogue_soc":  {"pat": 0.0001, "sal": 0.0,    "base": "TOTALITE"},
+
+    # SUR TRANCHE A (PMSS)
+    "vieillesse_pl": {"pat": 0.0855, "sal": 0.0690, "base": "TRANCHE_A"},
+    "fnal":          {"pat": 0.0010, "sal": 0.0,    "base": "TRANCHE_A"},
+    "retraite_t1":   {"pat": 0.0472, "sal": 0.0315, "base": "TRANCHE_A"},
+    "ceg_t1":        {"pat": 0.0129, "sal": 0.0086, "base": "TRANCHE_A"},
+    "cet_t1":        {"pat": 0.0021, "sal": 0.0014, "base": "TRANCHE_A"},
+    "apec_t1":       {"pat": 0.00036,"sal": 0.00024,"base": "TRANCHE_A"},
+    "prevoyance_deces":{"pat": 0.0159, "sal": 0.0, "base": "TRANCHE_A"},
+
+    # SUR TRANCHE B (Brut - PMSS, si brut > PMSS)
+    "retraite_t2":   {"pat": 0.1295, "sal": 0.0864, "base": "TRANCHE_B"},
+    "ceg_t2":        {"pat": 0.0162, "sal": 0.0108, "base": "TRANCHE_B"},
+    "cet_t2":        {"pat": 0.0021, "sal": 0.0014, "base": "TRANCHE_B"},
+    "apec_t2":       {"pat": 0.00036,"sal": 0.00024,"base": "TRANCHE_B"},
+    "prevoyance_supp":{"pat": 0.0073, "sal": 0.0073,"base": "TRANCHE_B"},
+
+    # CSG / CRDS (base = 98.25% du brut + contributions pat prevoyance)
+    "csg_deductible":{"pat": 0.0, "sal": 0.0680, "base": "CSG"},
+    "csg_crds":      {"pat": 0.0, "sal": 0.0290, "base": "CSG"},
+}
+
+COTISATIONS_LABELS = {
+    "maladie": "Maladie",
+    "maladie_compl": "Maladie complementaire",
+    "csa": "Contrib. Solidarite Autonomie",
+    "vieillesse_dep": "Vieillesse deplafonnee",
+    "af": "Allocations Familiales",
+    "af_compl": "Alloc. Familiales compl.",
+    "atmp": "AT/MP",
+    "chomage": "Chomage",
+    "ags": "AGS",
+    "formation": "Formation professionnelle",
+    "taxe_appr": "Taxe d'apprentissage",
+    "taxe_appr_lib": "Taxe appr. (liberatoire)",
+    "dialogue_soc": "Dialogue social",
+    "vieillesse_pl": "Vieillesse plafonnee",
+    "fnal": "FNAL",
+    "retraite_t1": "Retraite AGIRC-ARRCO T1",
+    "ceg_t1": "CEG T1",
+    "cet_t1": "CET T1",
+    "apec_t1": "APEC T1",
+    "prevoyance_deces": "Prevoyance deces cadre",
+    "retraite_t2": "Retraite AGIRC-ARRCO T2",
+    "ceg_t2": "CEG T2",
+    "cet_t2": "CET T2",
+    "apec_t2": "APEC T2",
+    "prevoyance_supp": "Prevoyance supp. cadre T2",
+    "csg_deductible": "CSG deductible",
+    "csg_crds": "CSG/CRDS non deductible",
+}
+
+# --- Initialisation des Variables (Session State) ---
+if 'cfg_base_salary' not in st.session_state:
+    st.session_state.cfg_base_salary = 2374.0
+if 'cfg_frais_gestion' not in st.session_state:
+    st.session_state.cfg_frais_gestion = 5.0
+if 'cfg_frais_intermediation' not in st.session_state:
+    st.session_state.cfg_frais_intermediation = 0.0
+if 'cfg_taux_prime' not in st.session_state:
+    st.session_state.cfg_taux_prime = 5.0
+if 'cfg_taux_reserve' not in st.session_state:
+    st.session_state.cfg_taux_reserve = 10.0
+if 'cfg_taux_cp' not in st.session_state:
+    st.session_state.cfg_taux_cp = 10.0
+if 'cfg_ik_rate' not in st.session_state:
+    st.session_state.cfg_ik_rate = 0.636
+if 'cfg_pmss' not in st.session_state:
+    st.session_state.cfg_pmss = 4005.0
+if 'cfg_mutuelle_taux' not in st.session_state:
+    st.session_state.cfg_mutuelle_taux = 1.5
+if 'cfg_mutuelle_part_pat' not in st.session_state:
+    st.session_state.cfg_mutuelle_part_pat = 50.0
+if 'cfg_smic_mensuel' not in st.session_state:
+    st.session_state.cfg_smic_mensuel = 1823.03
+if 'cfg_taux_atmp' not in st.session_state:
+    st.session_state.cfg_taux_atmp = 0.64
+
 
 # --- Fonction RGDU ---
 def calculer_rgdu(brut_mensuel, smic_mensuel, use_fnal_50=True):
@@ -100,7 +157,6 @@ def calculer_rgdu(brut_mensuel, smic_mensuel, use_fnal_50=True):
     tdelta = RGDU_TDELTA_FNAL_50 if use_fnal_50 else RGDU_TDELTA_FNAL_10
 
     # Formule RGDU 2026
-    # Coefficient = Tmin + (Tdelta × [(1/2) × (3 × SMIC_annuel / Brut_annuel - 1)]^P)
     ratio = (RGDU_SEUIL_SMIC * smic_annuel / brut_annuel) - 1
     if ratio <= 0:
         return 0.0
@@ -119,6 +175,68 @@ def calculer_rgdu(brut_mensuel, smic_mensuel, use_fnal_50=True):
 
     return reduction
 
+
+# --- Calcul cotisations ligne par ligne ---
+def calculer_cotisations(brut, pmss, atmp_rate, fnal_rate, prev_pat_contributions):
+    """
+    Calcule chaque cotisation individuellement (comme Silae).
+    Retourne un dict avec le detail ligne par ligne + totaux.
+    """
+    tranche_a = min(brut, pmss)
+    tranche_b = max(0, brut - pmss)
+
+    # Base CSG = 98.25% du brut + contributions pat prevoyance/mutuelle
+    base_csg = brut * 0.9825 + prev_pat_contributions
+
+    details = []
+    total_pat = 0
+    total_sal = 0
+
+    for nom, cotis in COTISATIONS_2026.items():
+        # Determiner la base
+        if cotis["base"] == "TOTALITE":
+            base = brut
+        elif cotis["base"] == "TRANCHE_A":
+            base = tranche_a
+        elif cotis["base"] == "TRANCHE_B":
+            base = tranche_b
+            if tranche_b == 0:
+                continue  # pas de T2 si brut <= PMSS
+        elif cotis["base"] == "CSG":
+            base = base_csg
+        else:
+            continue
+
+        # Appliquer taux AT/MP et FNAL configurables
+        taux_pat = cotis["pat"]
+        taux_sal = cotis["sal"]
+        if nom == "atmp":
+            taux_pat = atmp_rate
+        if nom == "fnal":
+            taux_pat = fnal_rate
+
+        montant_pat = round(base * taux_pat, 2)
+        montant_sal = round(base * taux_sal, 2)
+
+        total_pat += montant_pat
+        total_sal += montant_sal
+
+        details.append({
+            "nom": nom, "base": round(base, 2),
+            "taux_pat": taux_pat, "montant_pat": montant_pat,
+            "taux_sal": taux_sal, "montant_sal": montant_sal
+        })
+
+    return {
+        "details": details,
+        "total_pat": total_pat,
+        "total_sal": total_sal,
+        "tranche_a": tranche_a,
+        "tranche_b": tranche_b,
+        "base_csg": round(base_csg, 2),
+    }
+
+
 # --- Moteur de Calcul ---
 def calculate_salary(tjm, days_worked_month, days_worked_week,
                      ik_amount, igd_amount, other_expenses, use_reserve, use_mutuelle,
@@ -130,23 +248,12 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     rate_prime = st.session_state.cfg_taux_prime / 100.0
     rate_cp = st.session_state.cfg_taux_cp / 100.0
 
-    # Ajustements du taux patronal :
-    # 1. FNAL : -0.40% si < 50 salaries (0.10% au lieu de 0.50%)
-    # 2. AT/MP : le taux de base inclut 0.64% d'AT/MP par defaut,
-    #    on ajuste si l'utilisateur modifie le taux AT/MP
-    ajustement_fnal = 0.0040 if not effectif_sup_50 else 0.0
-    atmp_reference = 0.0064  # AT/MP de reference inclus dans le taux de base
-    atmp_config = st.session_state.cfg_taux_atmp / 100.0
-    ajustement_atmp = atmp_config - atmp_reference  # delta par rapport au taux de base
-
-    base_rate_pat = (st.session_state.cfg_taux_pat / 100.0) - ajustement_fnal + ajustement_atmp
-    reduced_rate_pat = (st.session_state.cfg_taux_pat_reduit / 100.0) - ajustement_fnal + ajustement_atmp
-    rate_sal = st.session_state.cfg_taux_sal / 100.0
-
-    smic = st.session_state.cfg_smic_mensuel
-    threshold_reduced = st.session_state.cfg_seuil_reduit_smic * smic
-
     pmss = st.session_state.cfg_pmss
+    smic = st.session_state.cfg_smic_mensuel
+    atmp_rate = st.session_state.cfg_taux_atmp / 100.0
+    fnal_rate = FNAL_TAUX_SUP_50 if effectif_sup_50 else FNAL_TAUX_INF_50
+
+    # Mutuelle
     mutuelle_total_cost = 0.0
     mutuelle_part_pat = 0.0
     mutuelle_part_sal = 0.0
@@ -155,14 +262,14 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         mutuelle_rate = st.session_state.cfg_mutuelle_taux / 100.0
         split_pat = st.session_state.cfg_mutuelle_part_pat / 100.0
         mutuelle_total_cost = pmss * mutuelle_rate
-        mutuelle_part_pat = mutuelle_total_cost * split_pat
-        mutuelle_part_sal = mutuelle_total_cost * (1 - split_pat)
+        mutuelle_part_pat = round(mutuelle_total_cost * split_pat, 2)
+        mutuelle_part_sal = round(mutuelle_total_cost * (1 - split_pat), 2)
 
     # Titres Restaurant
-    tr_part_sal = nb_titres_restaurant * TR_PART_PATRONALE_MAX  # 7.18 EUR
-    tr_part_pat = nb_titres_restaurant * TR_PART_PATRONALE_MAX  # 7.18 EUR
+    tr_part_sal = nb_titres_restaurant * TR_PART_PATRONALE_MAX
+    tr_part_pat = nb_titres_restaurant * TR_PART_PATRONALE_MAX
 
-    # Forfait teletravail (2.70 EUR/jour, max 22 jours)
+    # Forfait teletravail
     jours_teletravail_effectifs = min(jours_teletravail, TELETRAVAIL_MAX_JOURS)
     forfait_teletravail = jours_teletravail_effectifs * TELETRAVAIL_TAUX_JOUR
 
@@ -173,43 +280,43 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     # Montant disponible (apres frais de gestion et intermediation)
     montant_disponible = turnover - management_fees - frais_intermediation
 
-    # Total des frais rembourses (IK + IGD + Teletravail + Autres)
+    # Total des frais rembourses
     total_frais_rembourses = ik_amount + igd_amount + forfait_teletravail + other_expenses
 
     base_salary = cfg_base * (days_worked_week / 5.0)
     prime_apport = base_salary * rate_prime
 
-    # Reserve financiere = salaire de base x taux reserve
+    # Reserve financiere
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
     reserve_brute = cfg_base * (days_worked_week / 5.0) * rate_reserve
 
-    # Budget pour calculer le brut :
-    # On soustrait d'abord les couts fixes (frais, mutuelle pat, TR pat, reserve)
-    # puis on resout : Brut x (1 + taux_pat + paritarisme) = Budget restant
+    # Budget pour le brut : on soustrait les couts fixes (mutuelle pat, TR pat)
     couts_fixes_pat = mutuelle_part_pat + tr_part_pat
-    budget_masse_salariale = montant_disponible - total_frais_rembourses - couts_fixes_pat - reserve_brute
+    budget = montant_disponible - total_frais_rembourses - couts_fixes_pat - reserve_brute
 
-    # Taux effectif = taux patronal + paritarisme (0.016%)
-    taux_paritarisme = 0.00016
+    # --- Solve iteratif : budget = brut + cotis_pat(brut) + forfait_social(brut) ---
+    brut = budget / 1.45  # estimation initiale
+    for _ in range(50):
+        ta = min(brut, pmss)
+        tb = max(0, brut - pmss)
 
-    def solve_gross(cost, pat_rate):
-        return cost / (1 + pat_rate + taux_paritarisme)
+        # Pre-calcul contributions prevoyance patronales (pour base CSG + forfait social)
+        prev_deces_pat = round(ta * 0.0159, 2)
+        prev_supp_pat = round(tb * 0.0073, 2) if tb > 0 else 0.0
+        prev_pat_total = prev_deces_pat + mutuelle_part_pat + prev_supp_pat
 
-    rate_scenario = "Standard"
-    final_rate_pat = base_rate_pat
+        cotis = calculer_cotisations(brut, pmss, atmp_rate, fnal_rate, prev_pat_total)
+        forfait_social = round(prev_pat_total * 0.08, 2)
 
-    gross_candidate = solve_gross(budget_masse_salariale, reduced_rate_pat)
+        charges_variables = cotis["total_pat"] + forfait_social
+        brut_nouveau = budget - charges_variables
+        if abs(brut_nouveau - brut) < 0.01:
+            brut = brut_nouveau
+            break
+        brut = brut_nouveau
 
-    if gross_candidate <= threshold_reduced:
-        final_rate_pat = reduced_rate_pat
-        rate_scenario = "Reduit"
-    else:
-        gross_candidate = solve_gross(budget_masse_salariale, base_rate_pat)
-        final_rate_pat = base_rate_pat
-        rate_scenario = "Standard"
-
-    # Calcul du complement de remuneration avec separation 5%
-    base_prime_complement = gross_candidate / (1 + rate_cp)
+    # Decomposition du brut en composantes
+    base_prime_complement = brut / (1 + rate_cp)
     complement_total = base_prime_complement - base_salary - prime_apport
 
     if complement_total < 0:
@@ -222,34 +329,36 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     indemnite_cp = (base_salary + prime_apport + complement_remuneration + complement_apport_affaires) * rate_cp
     gross_salary = base_salary + prime_apport + complement_remuneration + complement_apport_affaires + indemnite_cp
 
-    # Calcul charges patronales
-    # = Cotisations sociales (brut x taux) + Mutuelle pat + TR pat + Paritarisme
-    cotisations_sociales = gross_salary * final_rate_pat
-    cotisation_paritarisme = gross_salary * 0.00016
+    # Recalcul final avec le brut exact
+    tranche_a = min(gross_salary, pmss)
+    tranche_b = max(0, gross_salary - pmss)
 
-    # RGDU (Reduction Generale Degressive Unique) si activee
+    prev_deces_pat = round(tranche_a * 0.0159, 2)
+    prev_supp_pat = round(tranche_b * 0.0073, 2) if tranche_b > 0 else 0.0
+    prev_pat_total = prev_deces_pat + mutuelle_part_pat + prev_supp_pat
+
+    cotis = calculer_cotisations(gross_salary, pmss, atmp_rate, fnal_rate, prev_pat_total)
+    forfait_social = round(prev_pat_total * 0.08, 2)
+
+    # RGDU
     reduction_rgdu = 0.0
     if use_rgdu:
         reduction_rgdu = calculer_rgdu(gross_salary, smic, use_fnal_50=effectif_sup_50)
 
-    # Charges patronales apres RGDU
-    employer_charges_avant_rgdu = cotisations_sociales + mutuelle_part_pat + tr_part_pat + cotisation_paritarisme
+    # Charges patronales totales
+    employer_charges_avant_rgdu = cotis["total_pat"] + mutuelle_part_pat + tr_part_pat + forfait_social
     employer_charges = employer_charges_avant_rgdu - reduction_rgdu
 
-    # Charges salariales = Brut x taux_sal + Mutuelle sal + TR sal
-    employee_charges_base = gross_salary * rate_sal
-    employee_charges = employee_charges_base + mutuelle_part_sal + tr_part_sal
+    # Charges salariales totales
+    employee_charges = cotis["total_sal"] + mutuelle_part_sal + tr_part_sal
 
-    # COUT GLOBAL SANS RESERVE = BRUT + CHARGES PATRONALES + TOTAL FRAIS
+    # Cout global
     cout_global_sans_reserve = gross_salary + employer_charges + total_frais_rembourses
 
-    # RESERVE = SALAIRE DE BASE x 10% (deja deduite du budget)
     reserve_amount = reserve_brute if use_reserve else 0
 
-    # NET AVANT IMPOT = BRUT - CHARGES SALARIALES
+    # Net
     net_before_tax = gross_salary - employee_charges
-
-    # NET A PAYER = NET AVANT IMPOT + FRAIS REMBOURSES
     net_payable = net_before_tax + total_frais_rembourses
 
     return {
@@ -272,11 +381,16 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "reserve_amount": reserve_amount,
         "employer_charges": employer_charges,
         "employer_charges_avant_rgdu": employer_charges_avant_rgdu,
-        "cotisations_sociales": cotisations_sociales,
-        "cotisation_paritarisme": cotisation_paritarisme,
+        "cotis_total_pat": cotis["total_pat"],
+        "cotis_total_sal": cotis["total_sal"],
+        "cotis_details": cotis["details"],
+        "forfait_social": forfait_social,
+        "prev_pat_total": prev_pat_total,
+        "tranche_a": cotis["tranche_a"],
+        "tranche_b": cotis["tranche_b"],
+        "base_csg": cotis["base_csg"],
         "reduction_rgdu": reduction_rgdu,
         "employee_charges": employee_charges,
-        "employee_charges_base": employee_charges_base,
         "mutuelle_part_pat": mutuelle_part_pat,
         "mutuelle_part_sal": mutuelle_part_sal,
         "tr_part_sal": tr_part_sal,
@@ -285,9 +399,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "cout_global_sans_reserve": cout_global_sans_reserve,
         "net_before_tax": net_before_tax,
         "net_payable": net_payable,
-        "rate_scenario": rate_scenario,
-        "rate_pat_applied": final_rate_pat,
-        "effectif_sup_50": effectif_sup_50
+        "effectif_sup_50": effectif_sup_50,
     }
 
 # --- PDF Generation ---
@@ -309,6 +421,7 @@ def create_pdf(data, name):
     t_gest = st.session_state.cfg_frais_gestion
     t_ik = st.session_state.cfg_ik_rate
 
+    # --- Activite & Frais ---
     pdf.set_font("Arial", 'B', size=12)
     pdf.cell(200, 10, txt="Activite & Frais", ln=1)
     pdf.set_font("Arial", size=11)
@@ -325,76 +438,118 @@ def create_pdf(data, name):
     pdf.set_font("Arial", 'B', size=11)
     pdf.cell(140, 8, txt="= MONTANT DISPONIBLE", border='T')
     pdf.cell(50, 8, txt=f"{data['montant_disponible']:,.2f} EUR", border='T', align='R', ln=1)
-
     pdf.ln(5)
 
+    # --- Decomposition Brut ---
     pdf.set_font("Arial", 'B', size=12)
     pdf.cell(200, 10, txt="Decomposition du Salaire Brut", ln=1)
     pdf.set_font("Arial", size=11)
 
     pdf.cell(140, 8, txt="Salaire de Base", border=0)
     pdf.cell(50, 8, txt=f"{data['base_salary']:,.2f} EUR", border=0, align='R', ln=1)
-
     pdf.cell(140, 8, txt="Prime d'apport d'affaires", border=0)
     pdf.cell(50, 8, txt=f"{data['prime_apport']:,.2f} EUR", border=0, align='R', ln=1)
-
     pdf.cell(140, 8, txt="Complement de remuneration", border=0)
     pdf.cell(50, 8, txt=f"{data['complement_remuneration']:,.2f} EUR", border=0, align='R', ln=1)
-
     pdf.cell(140, 8, txt="Complement Apport d'Affaires", border=0)
     pdf.cell(50, 8, txt=f"{data['complement_apport_affaires']:,.2f} EUR", border=0, align='R', ln=1)
-
     pdf.cell(140, 8, txt="Indemnite Conges Payes", border=0)
     pdf.cell(50, 8, txt=f"{data['indemnite_cp']:,.2f} EUR", border=0, align='R', ln=1)
 
     pdf.set_font("Arial", 'B', size=11)
     pdf.cell(140, 8, txt="= TOTAL BRUT", border='T')
     pdf.cell(50, 8, txt=f"{data['gross_salary']:,.2f} EUR", border='T', align='R', ln=1)
-
     pdf.ln(5)
 
+    # --- Charges Patronales (detail cotisations) ---
+    pdf.set_font("Arial", 'B', size=12)
+    pdf.cell(200, 10, txt="Charges Patronales (detail)", ln=1)
+
+    # En-tete du tableau
+    pdf.set_font("Arial", 'B', size=8)
+    pdf.cell(70, 6, txt="Cotisation", border='B')
+    pdf.cell(30, 6, txt="Base", border='B', align='R')
+    pdf.cell(20, 6, txt="Taux", border='B', align='R')
+    pdf.cell(30, 6, txt="Montant", border='B', align='R', ln=1)
+
+    pdf.set_font("Arial", size=8)
+    for d in data['cotis_details']:
+        if d['montant_pat'] > 0:
+            label = COTISATIONS_LABELS.get(d['nom'], d['nom'])
+            pdf.cell(70, 5, txt=label, border=0)
+            pdf.cell(30, 5, txt=f"{d['base']:,.2f}", border=0, align='R')
+            pdf.cell(20, 5, txt=f"{d['taux_pat']*100:.2f}%", border=0, align='R')
+            pdf.cell(30, 5, txt=f"{d['montant_pat']:,.2f}", border=0, align='R', ln=1)
+
+    pdf.set_font("Arial", size=9)
+    pdf.cell(120, 6, txt="+ Mutuelle Part Patronale", border=0)
+    pdf.cell(30, 6, txt=f"{data['mutuelle_part_pat']:,.2f}", border=0, align='R', ln=1)
+
+    if data.get('tr_part_pat', 0) > 0:
+        pdf.cell(120, 6, txt="+ Titres Restaurant Part Patronale", border=0)
+        pdf.cell(30, 6, txt=f"{data['tr_part_pat']:,.2f}", border=0, align='R', ln=1)
+
+    pdf.cell(120, 6, txt="+ Forfait Social Prevoyance (8%)", border=0)
+    pdf.cell(30, 6, txt=f"{data['forfait_social']:,.2f}", border=0, align='R', ln=1)
+
+    if data.get('reduction_rgdu', 0) > 0:
+        pdf.cell(120, 6, txt="- Reduction RGDU 2026", border=0)
+        pdf.cell(30, 6, txt=f"-{data['reduction_rgdu']:,.2f}", border=0, align='R', ln=1)
+
+    pdf.set_font("Arial", 'B', size=10)
+    pdf.cell(120, 8, txt="= TOTAL CHARGES PATRONALES", border='T')
+    pdf.cell(30, 8, txt=f"{data['employer_charges']:,.2f} EUR", border='T', align='R', ln=1)
+    pdf.ln(3)
+
+    # --- Reserve ---
     pdf.set_font("Arial", size=11)
     pdf.cell(140, 8, txt="Reserve Financiere Provisionnee", border=0)
     pdf.cell(50, 8, txt=f"{data['reserve_amount']:,.2f} EUR", border=0, align='R', ln=1)
 
-    pdf.cell(140, 8, txt="Mutuelle Part Patronale", border=0)
-    pdf.cell(50, 8, txt=f"{data['mutuelle_part_pat']:,.2f} EUR", border=0, align='R', ln=1)
-
-    if data.get('tr_part_pat', 0) > 0:
-        pdf.cell(140, 8, txt="Titres Restaurant Part Patronale", border=0)
-        pdf.cell(50, 8, txt=f"{data['tr_part_pat']:,.2f} EUR", border=0, align='R', ln=1)
-
-    taux_pat_pct = data['rate_pat_applied'] * 100
-    pdf.cell(140, 8, txt=f"Charges Patronales ({taux_pat_pct:.2f}%)", border=0)
-    pdf.cell(50, 8, txt=f"{data['employer_charges']:,.2f} EUR", border=0, align='R', ln=1)
-
-    if data.get('reduction_rgdu', 0) > 0:
-        pdf.cell(140, 8, txt="dont Reduction RGDU 2026", border=0)
-        pdf.cell(50, 8, txt=f"- {data['reduction_rgdu']:,.2f} EUR", border=0, align='R', ln=1)
-
     pdf.set_font("Arial", 'B', size=11)
     pdf.cell(140, 8, txt="= COUT GLOBAL SANS RESERVE", border='T')
     pdf.cell(50, 8, txt=f"{data['cout_global_sans_reserve']:,.2f} EUR", border='T', align='R', ln=1)
+    pdf.ln(3)
 
-    pdf.ln(5)
+    # --- Charges Salariales (detail) ---
+    pdf.set_font("Arial", 'B', size=12)
+    pdf.cell(200, 10, txt="Charges Salariales (detail)", ln=1)
 
-    pdf.set_font("Arial", size=11)
-    pdf.cell(140, 8, txt="Charges Salariales", border=0)
-    pdf.cell(50, 8, txt=f"- {data['employee_charges_base']:,.2f} EUR", border=0, align='R', ln=1)
+    pdf.set_font("Arial", 'B', size=8)
+    pdf.cell(70, 6, txt="Cotisation", border='B')
+    pdf.cell(30, 6, txt="Base", border='B', align='R')
+    pdf.cell(20, 6, txt="Taux", border='B', align='R')
+    pdf.cell(30, 6, txt="Montant", border='B', align='R', ln=1)
 
-    pdf.cell(140, 8, txt="Mutuelle Part Salariale", border=0)
-    pdf.cell(50, 8, txt=f"- {data['mutuelle_part_sal']:,.2f} EUR", border=0, align='R', ln=1)
+    pdf.set_font("Arial", size=8)
+    for d in data['cotis_details']:
+        if d['montant_sal'] > 0:
+            label = COTISATIONS_LABELS.get(d['nom'], d['nom'])
+            pdf.cell(70, 5, txt=label, border=0)
+            pdf.cell(30, 5, txt=f"{d['base']:,.2f}", border=0, align='R')
+            pdf.cell(20, 5, txt=f"{d['taux_sal']*100:.2f}%", border=0, align='R')
+            pdf.cell(30, 5, txt=f"{d['montant_sal']:,.2f}", border=0, align='R', ln=1)
+
+    pdf.set_font("Arial", size=9)
+    pdf.cell(120, 6, txt="+ Mutuelle Part Salariale", border=0)
+    pdf.cell(30, 6, txt=f"{data['mutuelle_part_sal']:,.2f}", border=0, align='R', ln=1)
 
     if data.get('tr_part_sal', 0) > 0:
-        pdf.cell(140, 8, txt="Titres Restaurant Part Salariale", border=0)
-        pdf.cell(50, 8, txt=f"- {data['tr_part_sal']:,.2f} EUR", border=0, align='R', ln=1)
+        pdf.cell(120, 6, txt="+ Titres Restaurant Part Salariale", border=0)
+        pdf.cell(30, 6, txt=f"{data['tr_part_sal']:,.2f}", border=0, align='R', ln=1)
 
+    pdf.set_font("Arial", 'B', size=10)
+    pdf.cell(120, 8, txt="= TOTAL CHARGES SALARIALES", border='T')
+    pdf.cell(30, 8, txt=f"{data['employee_charges']:,.2f} EUR", border='T', align='R', ln=1)
+    pdf.ln(3)
+
+    # --- Net ---
     pdf.set_font("Arial", 'B', size=11)
     pdf.cell(140, 8, txt="= NET AVANT IMPOT", border='T')
     pdf.cell(50, 8, txt=f"{data['net_before_tax']:,.2f} EUR", border='T', align='R', ln=1)
-
     pdf.ln(5)
 
+    # --- Frais rembourses ---
     pdf.set_font("Arial", size=11)
     if data.get('ik_amount', 0) > 0:
         pdf.cell(140, 8, txt=f"Indemnites Kilometriques ({t_ik} EUR/km)", border=0)
@@ -520,10 +675,9 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Options")
 
-    # Inverser la logique : coche = reserve reintegree (donc use_reserve = False pour provisionnement)
     reserve_reintegree = st.checkbox("Reserve Financiere reintegree", value=False,
                                      help="Cochez pour reintegrer la reserve (positif). Decochez pour provisionner (negatif).")
-    use_reserve = not reserve_reintegree  # Si coche = reintegree, on ne provisionne pas
+    use_reserve = not reserve_reintegree
 
     use_mutuelle = st.checkbox("Mutuelle Sante", value=True)
 
@@ -540,7 +694,7 @@ results = calculate_salary(tjm, days_worked_month, days_worked_week,
                            nb_titres_restaurant, frais_intermediation_pct, jours_teletravail, use_rgdu, effectif_sup_50)
 
 # Main : Onglets
-tab_simu, tab_config, tab_comm = st.tabs(["📊 Résultats Simulation", "⚙️ Configuration Globale", "📧 Email & Explications"])
+tab_simu, tab_config, tab_comm = st.tabs(["Resultats Simulation", "Configuration Globale", "Email & Explications"])
 
 with tab_simu:
     st.title("Simulateur de Portage Salarial 2026")
@@ -564,17 +718,7 @@ with tab_simu:
         st.subheader("Detail du Bulletin")
 
         txt_gest = f"Frais de gestion ({st.session_state.cfg_frais_gestion}%)"
-
-        rate_pat_txt = f"{results['rate_pat_applied']*100:.2f}%"
-        scenario = results.get('rate_scenario', 'Standard')
         effectif_txt = "< 50 sal." if not results.get('effectif_sup_50', False) else ">= 50 sal."
-
-        if scenario == "Reduit":
-            rate_pat_txt += " (Reduit - Bas salaire)"
-        rate_pat_txt += f" [{effectif_txt}]"
-
-        # Construction des lignes de detail charges patronales
-        txt_pat_base = f"Charges Patronales base ({rate_pat_txt})"
 
         # Construction dynamique des lignes
         data_lines = [
@@ -608,9 +752,9 @@ with tab_simu:
         if results['tr_part_pat'] > 0:
             data_lines.append(("Titres Restaurant Part Patronale", results['tr_part_pat'], "Detail"))
 
-        # Charges patronales avec detail
-        data_lines.append((f"Cotisations Sociales ({rate_pat_txt})", results['cotisations_sociales'], "Detail"))
-        data_lines.append((f"+ Cotisation Paritarisme (0.016%)", results['cotisation_paritarisme'], "Detail"))
+        # Charges patronales
+        data_lines.append((f"Cotisations Patronales [{effectif_txt}]", results['cotis_total_pat'], "Detail"))
+        data_lines.append(("Forfait Social Prevoyance (8%)", results['forfait_social'], "Detail"))
 
         if results.get('reduction_rgdu', 0) > 0:
             data_lines.append(("- Reduction RGDU 2026", -results['reduction_rgdu'], "Positif"))
@@ -635,7 +779,7 @@ with tab_simu:
         data_lines.append(("", 0, "Empty"))
 
         # Charges salariales
-        data_lines.append((f"Charges Salariales ({st.session_state.cfg_taux_sal}%)", -results['employee_charges_base'], "Negatif"))
+        data_lines.append(("Cotisations Salariales", -results['cotis_total_sal'], "Negatif"))
         data_lines.append(("Mutuelle Part Salariale", -results['mutuelle_part_sal'], "Negatif"))
         if results['tr_part_sal'] > 0:
             data_lines.append(("Titres Restaurant Part Salariale", -results['tr_part_sal'], "Negatif"))
@@ -657,56 +801,71 @@ with tab_simu:
             height=600
         )
 
-        # Expanders pour details des calculs
-        with st.expander("Detail Charges Patronales"):
+        # --- Expander : Detail Cotisations Patronales ---
+        with st.expander("Detail Cotisations Patronales (ligne par ligne)"):
             effectif_label = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
-            fnal_rate = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
+            fnal_rate_txt = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
+
+            st.info(f"**Effectif : {effectif_label}** | FNAL {fnal_rate_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}%")
+
+            pat_lines = [d for d in results['cotis_details'] if d['montant_pat'] > 0]
+            df_pat = pd.DataFrame([{
+                "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
+                "Base": d['base'],
+                "Taux": f"{d['taux_pat']*100:.3f}%",
+                "Montant": d['montant_pat']
+            } for d in pat_lines])
+
+            st.dataframe(
+                df_pat.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
+                use_container_width=True, hide_index=True
+            )
 
             st.markdown(f"""
-**Parametres appliques :**
-- Effectif : **{effectif_label}**
-- FNAL : **{fnal_rate}**
-- AT/MP : **{st.session_state.cfg_taux_atmp:.2f}%**
+**Sous-total cotisations** : **{results['cotis_total_pat']:,.2f} EUR**
 
-**Cotisations Sociales** ({results['rate_pat_applied']*100:.2f}%)
-- Brut x Taux = {results['gross_salary']:,.2f} x {results['rate_pat_applied']*100:.2f}% = **{results['cotisations_sociales']:,.2f} EUR**
-- *(Ce taux inclut : Maladie, Vieillesse, AF, Chomage, FNAL, CSA, AT/MP, Retraite, etc.)*
-
-**+ Mutuelle Part Patronale**
-- PMSS x Taux Mutuelle x Part Patronale = {st.session_state.cfg_pmss:,.2f} x {st.session_state.cfg_mutuelle_taux}% x {st.session_state.cfg_mutuelle_part_pat}% = **{results['mutuelle_part_pat']:,.2f} EUR**
-
-**+ Titres Restaurant Part Patronale**
-- Nb TR x 7.18 = {results['nb_titres_restaurant']} x 7.18 = **{results['tr_part_pat']:,.2f} EUR**
-
-**+ Cotisation Paritarisme** (0.016%)
-- Brut x 0.016% = {results['gross_salary']:,.2f} x 0.016% = **{results['cotisation_paritarisme']:,.2f} EUR**
-
-**- Reduction RGDU 2026** (si brut < 3 SMIC = {3*st.session_state.cfg_smic_mensuel:,.2f} EUR)
-- Effectif : {effectif_label} → Tdelta = {"0.3821" if results.get('effectif_sup_50', False) else "0.3781"}
-- Applicable : {"OUI" if results.get('reduction_rgdu', 0) > 0 else "NON (brut trop eleve)"}
-- Montant : **{results.get('reduction_rgdu', 0):,.2f} EUR**
+**+ Mutuelle Part Patronale** : {results['mutuelle_part_pat']:,.2f} EUR
+**+ Titres Restaurant Part Patronale** : {results['tr_part_pat']:,.2f} EUR
+**+ Forfait Social Prevoyance** (8% de {results['prev_pat_total']:,.2f}) : {results['forfait_social']:,.2f} EUR
+**- Reduction RGDU 2026** : {results.get('reduction_rgdu', 0):,.2f} EUR
 
 ---
-**TOTAL = {results['cotisations_sociales']:,.2f} + {results['mutuelle_part_pat']:,.2f} + {results['tr_part_pat']:,.2f} + {results['cotisation_paritarisme']:,.2f} - {results.get('reduction_rgdu', 0):,.2f} = {results['employer_charges']:,.2f} EUR**
+**TOTAL CHARGES PATRONALES = {results['employer_charges']:,.2f} EUR**
             """)
 
-        with st.expander("Detail Charges Salariales"):
+        # --- Expander : Detail Cotisations Salariales ---
+        with st.expander("Detail Cotisations Salariales (ligne par ligne)"):
+            sal_lines = [d for d in results['cotis_details'] if d['montant_sal'] > 0]
+            df_sal = pd.DataFrame([{
+                "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
+                "Base": d['base'],
+                "Taux": f"{d['taux_sal']*100:.3f}%",
+                "Montant": d['montant_sal']
+            } for d in sal_lines])
+
+            st.dataframe(
+                df_sal.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
+                use_container_width=True, hide_index=True
+            )
+
             st.markdown(f"""
-**Cotisations Sociales** ({st.session_state.cfg_taux_sal}%)
-- Brut x Taux = {results['gross_salary']:,.2f} x {st.session_state.cfg_taux_sal}% = **{results['employee_charges_base']:,.2f} EUR**
+**Sous-total cotisations** : **{results['cotis_total_sal']:,.2f} EUR**
 
-**+ Mutuelle Part Salariale**
-- PMSS x Taux Mutuelle x Part Salariale = {st.session_state.cfg_pmss:,.2f} x {st.session_state.cfg_mutuelle_taux}% x {100-st.session_state.cfg_mutuelle_part_pat}% = **{results['mutuelle_part_sal']:,.2f} EUR**
-
-**+ Titres Restaurant Part Salariale**
-- Nb TR x 7.18 = {results['nb_titres_restaurant']} x 7.18 = **{results['tr_part_sal']:,.2f} EUR**
+**+ Mutuelle Part Salariale** : {results['mutuelle_part_sal']:,.2f} EUR
+**+ Titres Restaurant Part Salariale** : {results['tr_part_sal']:,.2f} EUR
 
 ---
-**TOTAL = {results['employee_charges_base']:,.2f} + {results['mutuelle_part_sal']:,.2f} + {results['tr_part_sal']:,.2f} = {results['employee_charges']:,.2f} EUR**
+**TOTAL CHARGES SALARIALES = {results['employee_charges']:,.2f} EUR**
             """)
 
+        # --- Expander : Formules de Calcul ---
         with st.expander("Formules de Calcul"):
             st.markdown(f"""
+**Tranches :**
+- Tranche A (PMSS) = min(Brut, {st.session_state.cfg_pmss:,.2f}) = **{results['tranche_a']:,.2f} EUR**
+- Tranche B = max(0, Brut - PMSS) = **{results['tranche_b']:,.2f} EUR**
+- Base CSG = 98.25% x Brut + Contrib. prevoyance pat = **{results['base_csg']:,.2f} EUR**
+
 **NET AVANT IMPOT**
 ```
 = BRUT - CHARGES SALARIALES
@@ -738,10 +897,14 @@ with tab_simu:
 
     with col_viz:
         st.subheader("Repartition")
-        labels = ['Net Avant Impot', 'Charges Sociales', 'Mutuelle', 'Frais Gestion', 'Reserve']
+        charges_cotis = (results['cotis_total_pat'] + results['cotis_total_sal']
+                         + results['forfait_social'] - results['reduction_rgdu'])
+        charges_mutuelle_tr = (results['mutuelle_part_pat'] + results['mutuelle_part_sal']
+                               + results['tr_part_pat'] + results['tr_part_sal'])
+        labels = ['Net Avant Impot', 'Cotisations Sociales', 'Mutuelle & TR', 'Frais Gestion', 'Reserve']
         values = [results['net_before_tax'],
-                  results['employee_charges_base'] + results['employer_charges'],
-                  results['mutuelle_part_pat'] + results['mutuelle_part_sal'],
+                  charges_cotis,
+                  charges_mutuelle_tr,
                   results['management_fees'] + results['frais_intermediation'],
                   results['reserve_amount']]
 
@@ -785,56 +948,35 @@ with tab_config:
         )
 
     with c2:
-        st.subheader("Charges & Mutuelle")
-        st.session_state.cfg_taux_pat = st.number_input(
-            "Taux Charges Patronales de base (%)",
-            value=st.session_state.cfg_taux_pat, format="%.2f", step=0.05,
-            help="Taux pour >= 50 salaries (FNAL 0.50%). Pour < 50 sal., -0.40%"
-        )
-        # Afficher le taux ajuste selon effectif
-        taux_pat_ajuste = st.session_state.cfg_taux_pat - (0.40 if not effectif_sup_50 else 0.0)
-        st.caption(f"Taux applique : **{taux_pat_ajuste:.2f}%** ({'< 50 sal.' if not effectif_sup_50 else '>= 50 sal.'})")
-
-        st.session_state.cfg_taux_sal = st.number_input(
-            "Taux Charges Salariales (%)",
-            value=st.session_state.cfg_taux_sal, format="%.2f", step=0.05
-        )
+        st.subheader("Cotisations & References")
         st.session_state.cfg_taux_atmp = st.number_input(
             "Taux AT/MP (%)",
             value=st.session_state.cfg_taux_atmp, format="%.2f", step=0.01,
-            help="Accident du Travail / Maladie Professionnelle. Varie selon activite (0.89% a 2.08%)"
-        )
-        st.divider()
-        st.markdown("#### Seuils & Bascule")
-        st.session_state.cfg_smic_mensuel = st.number_input(
-            "SMIC Mensuel Brut (EUR)",
-            value=st.session_state.cfg_smic_mensuel, step=10.0
-        )
-        st.session_state.cfg_taux_pat_reduit = st.number_input(
-            "Taux Patronal Reduit (%)",
-            value=st.session_state.cfg_taux_pat_reduit, step=0.5
-        )
-        st.session_state.cfg_seuil_reduit_smic = st.number_input(
-            "Seuil Taux Reduit (x SMIC)",
-            value=st.session_state.cfg_seuil_reduit_smic, step=0.1
+            help="Accident du Travail / Maladie Professionnelle. Seul taux patronal modifiable."
         )
 
-        limit_reduit = st.session_state.cfg_smic_mensuel * st.session_state.cfg_seuil_reduit_smic
-
-        st.info(f"""
-        **Paliers actuels :**
-        < {limit_reduit:,.0f} EUR : Taux Reduit ({st.session_state.cfg_taux_pat_reduit}%)
-        >= {limit_reduit:,.0f} EUR : Standard ({st.session_state.cfg_taux_pat}%)
-        """)
+        fnal_effectif = "0.10% (< 50 sal.)" if not effectif_sup_50 else "0.50% (>= 50 sal.)"
+        st.info(f"**FNAL** : {fnal_effectif} (automatique selon effectif)")
 
         st.divider()
         st.session_state.cfg_pmss = st.number_input(
             "Plafond Secu (PMSS) (EUR)",
             value=st.session_state.cfg_pmss, step=100.0
         )
+        st.session_state.cfg_smic_mensuel = st.number_input(
+            "SMIC Mensuel Brut (EUR)",
+            value=st.session_state.cfg_smic_mensuel, step=10.0
+        )
+
+        st.divider()
+        st.subheader("Mutuelle")
         st.session_state.cfg_mutuelle_taux = st.number_input(
             "Taux Mutuelle (% du PMSS)",
             value=st.session_state.cfg_mutuelle_taux, step=0.1
+        )
+        st.session_state.cfg_mutuelle_part_pat = st.number_input(
+            "Part Patronale Mutuelle (%)",
+            value=st.session_state.cfg_mutuelle_part_pat, step=5.0
         )
 
     with c3:
@@ -848,12 +990,6 @@ with tab_config:
         st.caption(f"Taux actuel : {st.session_state.cfg_ik_rate:.3f} EUR/km")
 
         st.divider()
-        st.session_state.cfg_mutuelle_part_pat = st.number_input(
-            "Part Patronale Mutuelle (%)",
-            value=st.session_state.cfg_mutuelle_part_pat, step=5.0
-        )
-
-        st.divider()
         st.markdown("#### Baremes IGD URSSAF 2026")
         st.caption(f"Repas : {IGD_REPAS:.2f} EUR")
         st.caption(f"Nuitee Province : {IGD_NUITEE_PROVINCE:.2f} EUR")
@@ -863,6 +999,22 @@ with tab_config:
         st.markdown("#### Titres Restaurant")
         st.caption(f"Valeur faciale : {TR_VALEUR_FACIALE:.2f} EUR")
         st.caption(f"Part patronale max : {TR_PART_PATRONALE_MAX:.2f} EUR")
+
+    # Tableau des taux fixes 2026 (lecture seule)
+    st.divider()
+    with st.expander("Taux de cotisations 2026 (lecture seule)"):
+        taux_data = []
+        for nom, cotis in COTISATIONS_2026.items():
+            label = COTISATIONS_LABELS.get(nom, nom)
+            base_label = {"TOTALITE": "Totalite", "TRANCHE_A": "Tranche A (PMSS)", "TRANCHE_B": "Tranche B", "CSG": "Base CSG"}.get(cotis["base"], cotis["base"])
+            taux_data.append({
+                "Cotisation": label,
+                "Taux Patron": f"{cotis['pat']*100:.3f}%",
+                "Taux Salarie": f"{cotis['sal']*100:.3f}%",
+                "Base": base_label,
+            })
+        df_taux = pd.DataFrame(taux_data)
+        st.dataframe(df_taux, use_container_width=True, hide_index=True, height=600)
 
     st.success("Les modifications sont prises en compte automatiquement dans l'onglet 'Resultats'.")
 
@@ -895,11 +1047,12 @@ with tab_comm:
 - Indemnite Conges Payes (10%) : **{results['indemnite_cp']:,.2f} EUR**
 
 = **Salaire Brut Total : {results['gross_salary']:,.2f} EUR**
+
+*Tranches : A = {results['tranche_a']:,.2f} EUR (PMSS) | B = {results['tranche_b']:,.2f} EUR*
         """)
 
-        # Section 4 - Charges patronales
-        st.markdown("### 4. Les Charges Patronales (detail)")
-        scenario = results.get('rate_scenario', 'Standard')
+        # Section 4 - Charges patronales (ligne par ligne)
+        st.markdown("### 4. Les Charges Patronales (ligne par ligne)")
         effectif_expl = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
         fnal_expl = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
 
@@ -909,13 +1062,15 @@ with tab_comm:
 - FNAL : **{fnal_expl}**
 - AT/MP : **{st.session_state.cfg_taux_atmp:.2f}%**
 
-**Cotisations Sociales Patronales** ({scenario} {results['rate_pat_applied']*100:.2f}%)
-- Calcul : {results['gross_salary']:,.2f} x {results['rate_pat_applied']*100:.2f}% = **{results['cotisations_sociales']:,.2f} EUR**
+**Cotisations patronales calculees ligne par ligne** (comme Silae)
+- Total cotisations : **{results['cotis_total_pat']:,.2f} EUR** (detail dans l'onglet Resultats)
+        """)
 
+        st.markdown(f"""
 **Elements supplementaires :**
 - Mutuelle part patronale : **{results['mutuelle_part_pat']:,.2f} EUR**
 - Titres Restaurant part patronale ({results['nb_titres_restaurant']} x {TR_PART_PATRONALE_MAX:.2f}) : **{results['tr_part_pat']:,.2f} EUR**
-- Cotisation Paritarisme (0.016%) : {results['gross_salary']:,.2f} x 0.016% = **{results['cotisation_paritarisme']:,.2f} EUR**
+- Forfait Social Prevoyance (8% de {results['prev_pat_total']:,.2f}) : **{results['forfait_social']:,.2f} EUR**
         """)
 
         if results.get('reduction_rgdu', 0) > 0:
@@ -928,42 +1083,23 @@ with tab_comm:
 
         st.success(f"""
 **TOTAL CHARGES PATRONALES**
-= Cotisations ({results['cotisations_sociales']:,.2f}) + Mutuelle ({results['mutuelle_part_pat']:,.2f}) + TR ({results['tr_part_pat']:,.2f}) + Paritarisme ({results['cotisation_paritarisme']:,.2f}) - RGDU ({results.get('reduction_rgdu', 0):,.2f})
+= Cotisations ({results['cotis_total_pat']:,.2f}) + Mutuelle ({results['mutuelle_part_pat']:,.2f}) + TR ({results['tr_part_pat']:,.2f}) + Forfait Social ({results['forfait_social']:,.2f}) - RGDU ({results.get('reduction_rgdu', 0):,.2f})
 = **{results['employer_charges']:,.2f} EUR**
         """)
 
-        with st.expander("Tableau des cotisations patronales URSSAF 2026"):
-            fnal_taux = "0.50%" if results.get('effectif_sup_50', False) else "0.10%"
-            fnal_base = "Totalite" if results.get('effectif_sup_50', False) else "Tranche A"
-            taux_applique = results['rate_pat_applied'] * 100
-
-            st.info(f"**Effectif : {'≥ 50 salaries' if results.get('effectif_sup_50', False) else '< 50 salaries'}** | FNAL {fnal_taux} | **Taux applique : {taux_applique:.2f}%**")
-
-            st.markdown(f"""
-| Cotisation | Taux | Base |
-|------------|------|------|
-| Maladie | 13.00% | Totalite |
-| Vieillesse deplafonnee | 2.02% | Totalite |
-| Vieillesse plafonnee | 8.55% | Tranche A (PMSS) |
-| Allocations Familiales | 5.25% | Totalite |
-| Chomage | 4.05% | Tranche A+B |
-| AGS | 0.15% | Tranche A+B |
-| **FNAL** | **{fnal_taux}** | {fnal_base} |
-| CSA (Autonomie) | 0.30% | Totalite |
-| **AT/MP** | **{st.session_state.cfg_taux_atmp:.2f}%** | Totalite |
-| Retraite AGIRC-ARRCO T1 | 4.72% | Tranche A |
-| Retraite AGIRC-ARRCO T2 | 12.95% | Tranche B |
-| CEG T1 | 1.29% | Tranche A |
-| CEG T2 | 1.62% | Tranche B |
-| Dialogue Social | 0.016% | Totalite |
-| Formation prof. | 1.00% | Totalite |
-| Taxe apprentissage | 0.68% | Totalite |
-| Prevoyance cadre | 1.50% | Tranche A |
-
-*PMSS 2026 = 4 005 EUR / SMIC 2026 = 1 823.03 EUR*
-
-**Note :** Certaines cotisations sont plafonnees (Tranche A = PMSS). Le taux applique dans le simulateur ({taux_applique:.2f}%) est un taux global sur le brut total.
-            """)
+        # Expander tableau cotisations patronales
+        with st.expander("Tableau cotisations patronales 2026"):
+            pat_lines = [d for d in results['cotis_details'] if d['montant_pat'] > 0]
+            df_pat_expl = pd.DataFrame([{
+                "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
+                "Base": d['base'],
+                "Taux": f"{d['taux_pat']*100:.3f}%",
+                "Montant": d['montant_pat']
+            } for d in pat_lines])
+            st.dataframe(
+                df_pat_expl.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
+                use_container_width=True, hide_index=True
+            )
 
         # Section 5 - Frais rembourses
         st.markdown("### 5. Les Frais Rembourses (non imposables)")
@@ -998,12 +1134,12 @@ with tab_comm:
 *Cet argent reste a vous ! Il sert a financer vos periodes d'intercontrat ou est verse en fin de contrat. Il est deduit du budget avant le calcul du brut.*
             """)
 
-        # Section 8 - Charges salariales
-        st.markdown("### 8. Les Charges Salariales (detail)")
+        # Section 8 - Charges salariales (ligne par ligne)
+        st.markdown("### 8. Les Charges Salariales (ligne par ligne)")
 
         st.markdown(f"""
-**Cotisations Sociales Salariales** ({st.session_state.cfg_taux_sal}%)
-- Calcul : {results['gross_salary']:,.2f} x {st.session_state.cfg_taux_sal}% = **{results['employee_charges_base']:,.2f} EUR**
+**Cotisations salariales calculees ligne par ligne** (comme Silae)
+- Total cotisations : **{results['cotis_total_sal']:,.2f} EUR** (detail dans l'onglet Resultats)
 
 **Elements supplementaires :**
 - Mutuelle part salariale : **{results['mutuelle_part_sal']:,.2f} EUR**
@@ -1012,33 +1148,23 @@ with tab_comm:
 
         st.success(f"""
 **TOTAL CHARGES SALARIALES**
-= Cotisations ({results['employee_charges_base']:,.2f}) + Mutuelle ({results['mutuelle_part_sal']:,.2f}) + TR ({results['tr_part_sal']:,.2f})
+= Cotisations ({results['cotis_total_sal']:,.2f}) + Mutuelle ({results['mutuelle_part_sal']:,.2f}) + TR ({results['tr_part_sal']:,.2f})
 = **{results['employee_charges']:,.2f} EUR**
         """)
 
-        with st.expander("Tableau des cotisations salariales URSSAF 2026"):
-            taux_sal_applique = st.session_state.cfg_taux_sal
-
-            st.info(f"**Taux applique : {taux_sal_applique:.2f}%**")
-
-            st.markdown(f"""
-| Cotisation | Taux | Base |
-|------------|------|------|
-| CSG deductible | 6.80% | 98.25% du brut |
-| CSG non deductible | 2.40% | 98.25% du brut |
-| CRDS | 0.50% | 98.25% du brut |
-| Vieillesse deplafonnee | 0.40% | Totalite |
-| Vieillesse plafonnee | 6.90% | Tranche A (PMSS) |
-| Chomage | 0.00% | Supprime en 2018 |
-| Retraite AGIRC-ARRCO T1 | 3.15% | Tranche A |
-| Retraite AGIRC-ARRCO T2 | 8.64% | Tranche B |
-| CEG T1 | 0.86% | Tranche A |
-| CEG T2 | 1.08% | Tranche B |
-
-*PMSS 2026 = 4 005 EUR / SMIC 2026 = 1 823.03 EUR*
-
-**Note :** Le taux applique dans le simulateur ({taux_sal_applique:.2f}%) est un taux global sur le brut total.
-            """)
+        # Expander tableau cotisations salariales
+        with st.expander("Tableau cotisations salariales 2026"):
+            sal_lines = [d for d in results['cotis_details'] if d['montant_sal'] > 0]
+            df_sal_expl = pd.DataFrame([{
+                "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
+                "Base": d['base'],
+                "Taux": f"{d['taux_sal']*100:.3f}%",
+                "Montant": d['montant_sal']
+            } for d in sal_lines])
+            st.dataframe(
+                df_sal_expl.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
+                use_container_width=True, hide_index=True
+            )
 
         # Section 9 - Net final
         st.markdown("### 9. Le Net Final")
@@ -1097,18 +1223,10 @@ with tab_comm:
         if results['nb_titres_restaurant'] > 0:
             txt_tr = f"\n- Titres Restaurant : {results['nb_titres_restaurant']} titres (part patronale {results['tr_part_pat']:,.2f} EUR)."
 
-        # Optimisation charges
-        txt_opti = ""
-        if results.get('rate_scenario') == 'Reduit':
-            txt_opti = "\n- Optimisation : Cette simulation integre les allegements de charges sociales en vigueur pour maximiser votre net."
-
         # RGDU
         txt_rgdu = ""
         if results.get('reduction_rgdu', 0) > 0:
             txt_rgdu = f"\n- RGDU 2026 : Reduction des charges patronales de {results['reduction_rgdu']:,.2f} EUR (allegement automatique)."
-
-        # Info charges patronales
-        txt_complements = ""
 
         email_content = f"""Objet : Votre simulation de revenus - TJM {tjm} EUR
 
@@ -1124,14 +1242,13 @@ VOTRE NET A PAYER ESTIME : {results['net_payable']:,.2f} EUR
 Ce montant comprend :
 *   Votre Salaire Net (apres deduction de toutes les charges sociales).{txt_frais}
 
-Les points cles de cette simulation :{txt_mutuelle}{txt_reserve_mail}{txt_tr}{txt_opti}{txt_rgdu}
+Les points cles de cette simulation :{txt_mutuelle}{txt_reserve_mail}{txt_tr}{txt_rgdu}
 - Securite : Cotisations completes (Chomage, Retraite Cadre, Securite Sociale).
 - Transparence : Tout est detaille dans le PDF ci-joint (Baremes 2026).
-{txt_complements}
 
 Detail du calcul :
 - Salaire Brut : {results['gross_salary']:,.2f} EUR
-- Charges Salariales : {results['employee_charges_base']:,.2f} EUR
+- Charges Salariales : {results['cotis_total_sal']:,.2f} EUR
 - Charges Patronales : {results['employer_charges']:,.2f} EUR
 - Net Avant Impot : {results['net_before_tax']:,.2f} EUR
 

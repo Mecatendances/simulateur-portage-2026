@@ -1294,8 +1294,14 @@ Les points cles de cette simulation :{txt_mutuelle}{txt_reserve_mail}{txt_tr}{tx
 - Transparence : Tout est detaille dans le PDF ci-joint (Baremes 2026).
 
 Detail du calcul :
-- Salaire Brut : {results['gross_salary']:,.2f} EUR
-- Charges Salariales : {results['cotis_total_sal']:,.2f} EUR
+- Salaire de Base : {results['base_salary']:,.2f} EUR
+- Prime d'apport d'affaires : {results['prime_apport']:,.2f} EUR
+- Complement de remuneration : {results['complement_remuneration']:,.2f} EUR
+- Complement Apport d'Affaires : {results['complement_apport_affaires']:,.2f} EUR{"" if results.get('provision_charges_reserve', 0) == 0 else f"""
+- Provision charges reserve : {results['provision_charges_reserve']:,.2f} EUR"""}
+- Indemnite Conges Payes : {results['indemnite_cp']:,.2f} EUR
+= Salaire Brut Total : {results['gross_salary']:,.2f} EUR
+- Charges Salariales : {results['employee_charges']:,.2f} EUR
 - Charges Patronales : {results['employer_charges']:,.2f} EUR
 - Net Avant Impot : {results['net_before_tax']:,.2f} EUR
 

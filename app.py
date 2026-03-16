@@ -740,16 +740,17 @@ def _generer_chart_png(data):
         return None
     lf, vf, cf = zip(*filt)
 
-    fig, ax = plt.subplots(figsize=(2.8, 2.8))
+    fig, ax = plt.subplots(figsize=(2.5, 2.5))
     wedges, _, autotexts = ax.pie(vf, colors=cf, autopct='%1.1f%%', startangle=90,
-                                   textprops={'fontsize': 7, 'weight': 'bold'},
-                                   pctdistance=0.75, wedgeprops={'linewidth': 1, 'edgecolor': 'white'})
+                                   textprops={'fontsize': 8, 'weight': 'bold'},
+                                   pctdistance=0.72, wedgeprops={'linewidth': 1.5, 'edgecolor': 'white'})
     for t in autotexts:
         t.set_color('white')
     ax.add_artist(plt.Circle((0, 0), 0.38, fc='white'))
-    plt.tight_layout()
+    ax.set_aspect('equal')
+    fig.subplots_adjust(left=0.05, right=0.95, top=0.95, bottom=0.05)
     tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-    plt.savefig(tmp.name, dpi=200, bbox_inches='tight', transparent=True)
+    plt.savefig(tmp.name, dpi=200, pad_inches=0.1, transparent=True)
     plt.close()
     return tmp.name
 

@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from fpdf import FPDF
 import base64
 import requests
 import tempfile
@@ -9,6 +8,8 @@ import os
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from jinja2 import Template
+from weasyprint import HTML
 
 # --- Baremes URSSAF 2026 ---
 BAREME_IK_VOITURE_2026 = {
@@ -717,199 +718,111 @@ def _dotted_line(pdf, x, y, w, h, label, value_str, font_name="D", font_size=8.5
     pdf.cell(value_w, h, txt=value_str, align='R', ln=0)
 
 
-# --- PDF Generation (V7 — fidèle au modèle Signe+) ---
+# --- PDF Generation (V8 — HTML/CSS via WeasyPrint) ---
+_TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd(), "template_pdf.html")
+
+
+def _generer_chart_png(data):
+    """Génère le donut chart en PNG pour le PDF."""
+    frais_g = (data['management_fees'] + data['frais_intermediation']
+               + data.get('frais_partages', 0) + data.get('commission_apporteur', 0))
+    cotis = (data['cotis_total_pat'] + data['cotis_total_sal'] + data['forfait_social']
+             - data['reduction_rgdu'] + data['mutuelle_part_pat'] + data['mutuelle_part_sal']
+             + data['tr_part_pat'] + data['tr_part_sal'])
+    prov = data['provision_reserve_financiere'] if not data.get('reserve_reintegree', False) else 0
+
+    labels = ['Net à payer', 'Frais de gestion', 'Cotisations', 'Provision']
+    values = [data['net_payable'], frais_g, cotis, prov]
+    colors = ['#4A90D9', '#9E9E9E', '#E91E63', '#F48FB1']
+    filt = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 0]
+    if not filt:
+        return None
+    lf, vf, cf = zip(*filt)
+
+    fig, ax = plt.subplots(figsize=(2.8, 2.8))
+    wedges, _, autotexts = ax.pie(vf, colors=cf, autopct='%1.1f%%', startangle=90,
+                                   textprops={'fontsize': 7, 'weight': 'bold'},
+                                   pctdistance=0.75, wedgeprops={'linewidth': 1, 'edgecolor': 'white'})
+    for t in autotexts:
+        t.set_color('white')
+    ax.add_artist(plt.Circle((0, 0), 0.38, fc='white'))
+    plt.tight_layout()
+    tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+    plt.savefig(tmp.name, dpi=200, bbox_inches='tight', facecolor='white', transparent=False)
+    plt.close()
+    return tmp.name
+
+
 def create_pdf(data, name, membre_bu=""):
-    pdf = FPDF()
-    pdf.add_page()
-    pw, ph = 210, 297
-
-    pdf.add_font("D", "", FONT_PATH, uni=True)
-    pdf.add_font("D", "B", FONT_BOLD_PATH, uni=True)
-    pdf.add_font("D", "I", FONT_ITALIC_PATH, uni=True)
-
+    """Génère le PDF via HTML + WeasyPrint."""
     t_gest = st.session_state.cfg_frais_gestion
     nb_tr = data.get('nb_titres_restaurant', 0)
-    v_tjm = data.get('tjm', 0)
-    v_jours = data.get('days_worked_month', 0)
     label_res = data.get('label_reserve', 'Réserve financière')
 
-    # ── FOND CHARCOAL ──
-    pdf.set_fill_color(CHARCOAL_R, CHARCOAL_G, CHARCOAL_B)
-    pdf.rect(0, 0, pw, ph, 'F')
-
-    # ── BANDEAU ROSE (haut) ──
-    bh = 28
-    pdf.set_fill_color(ROSE_R, ROSE_G, ROSE_B)
-    pdf.rect(0, 0, pw, bh, 'F')
-
-    if os.path.exists(LOGO_PATH):
-        pdf.image(LOGO_PATH, x=10, y=4, w=46)
-
-    # 4 colonnes dans le bandeau
-    pdf.set_text_color(255, 255, 255)
-    cw_col, xs = 33, 62
-    pdf.set_font("D", '', 6.5)
-    pdf.set_xy(xs, 5)
-    for lbl in ["TJM", "Nb de jours / mois", "Frais de gestion", "Tickets-Restaurants"]:
-        pdf.cell(cw_col, 4, lbl, align='C')
-    pdf.set_font("D", 'B', 12)
-    pdf.set_xy(xs, 11)
-    for v in [f"{v_tjm:.0f}€", f"{v_jours:g}j", f"{t_gest}%", "Oui" if nb_tr > 0 else "Non"]:
-        pdf.cell(cw_col, 7, v, align='C')
-
-    # ── CONTENEUR BLANC ──
-    cx, cy = 8, bh + 3
-    cw_b = pw - 16
-    footer_y = ph - 34
-    pdf.set_fill_color(255, 255, 255)
-    pdf.rect(cx, cy, cw_b, footer_y - cy - 2, 'F')
-
-    mx = cx + 5
-    mw = cw_b - 10
-    lw = 95  # colonne gauche (salaire)
-
-    # ── TITRE ──
-    pdf.set_font("D", 'B', 14)
-    pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
-    pdf.set_xy(cx, cy + 3)
-    pdf.cell(cw_b, 8, "SIMULATION", ln=1, align="C")
-    pdf.set_text_color(60, 60, 60)
-    pdf.set_font("D", "", 8)
-    pdf.set_x(cx)
-    pdf.cell(cw_b, 4, name, ln=1, align="C")
-    pdf.ln(2)
-
-    # ── DEUX COLONNES ──
-    y0 = pdf.get_y()
-    lh = 4.8
-
     # Lignes salaire
-    sal = [
-        ("Salaire de base", data['base_salary']),
-        ("Prime d'apports d'affaires", data['prime_apport']),
-        ("Complément de rémunération", data['complement_remuneration']),
+    salary_lines = [
+        {"label": "Salaire de base", "value": f"{data['base_salary']:,.2f}€"},
+        {"label": "Prime d'apports d'affaires", "value": f"{data['prime_apport']:,.2f}€"},
+        {"label": "Complément de rémunération", "value": f"{data['complement_remuneration']:,.2f}€"},
     ]
     if data.get('reserve_reintegree', False):
-        sal.append((label_res.capitalize(), data['reserve_brute']))
-    sal.append(("Indemnités Congés Payés", data['indemnite_cp']))
+        salary_lines.append({"label": label_res.capitalize(), "value": f"{data['reserve_brute']:,.2f}€"})
+    salary_lines.append({"label": "Indemnités Congés Payés", "value": f"{data['indemnite_cp']:,.2f}€"})
 
-    y = y0
-    for label, val in sal:
-        _dotted_line(pdf, mx, y, lw, lh, label, f"{val:,.2f}€", font_size=8)
-        y += lh
+    # Lignes frais
+    frais_lines = []
+    if data.get('ik_amount', 0) > 0:
+        frais_lines.append({"label": "Indemnités Kilométriques", "value": f"{data['ik_amount']:,.2f}€"})
+    if data.get('igd_amount', 0) > 0:
+        frais_lines.append({"label": "Indemnités Grands Déplacements", "value": f"{data['igd_amount']:,.2f}€"})
+    if data.get('forfait_teletravail', 0) > 0:
+        frais_lines.append({"label": f"Forfait Télétravail ({data['jours_teletravail']}j × 2.70)", "value": f"{data['forfait_teletravail']:,.2f}€"})
+    if data.get('other_expenses', 0) > 0:
+        frais_lines.append({"label": "Autres Frais", "value": f"{data['other_expenses']:,.2f}€"})
 
-    # Salaire Brut — même style que le modèle (juste ligne normale, pas de surbrillance)
-    _dotted_line(pdf, mx, y, lw, lh, "Salaire Brut", f"{data['gross_salary']:,.2f}€", font_size=8)
-    y += lh + 1
+    # Reserve note
+    reserve_note = ""
+    if data.get('reserve_brute', 0) > 0 and not data.get('reserve_reintegree', False):
+        reserve_note = f"*La {label_res} : {data['reserve_brute']:,.2f}€ brut provisionnée tous les mois."
 
-    # Charges
-    for label, val in [("Charges Salariales", data['employee_charges']),
-                        ("Charges Patronales", data['employer_charges'])]:
-        _dotted_line(pdf, mx, y, lw, lh, label, f"{val:,.2f}€", font_size=8)
-        y += lh
+    # Chart
+    chart_path = _generer_chart_png(data)
 
-    y_left = y
+    # Template
+    with open(_TEMPLATE_PATH, 'r', encoding='utf-8') as f:
+        tpl = Template(f.read())
 
-    # Camembert (droite)
-    chart_path = _generer_camembert_pdf(data)
+    html_str = tpl.render(
+        logo_path=LOGO_PATH if os.path.exists(LOGO_PATH) else "",
+        tjm=f"{data.get('tjm', 0):.0f}",
+        days=f"{data.get('days_worked_month', 0):g}",
+        frais_gestion=f"{t_gest}",
+        tr_label="Oui" if nb_tr > 0 else "Non",
+        name=name,
+        salary_lines=salary_lines,
+        gross_salary=f"{data['gross_salary']:,.2f}€",
+        employee_charges=f"{data['employee_charges']:,.2f}€",
+        employer_charges=f"{data['employer_charges']:,.2f}€",
+        frais_lines=frais_lines,
+        chart_path=chart_path or "",
+        has_provision=data.get('provision_reserve_financiere', 0) > 0,
+        show_brut_reserve=data.get('reserve_reintegree', False),
+        net_payable=f"{data['net_payable']:,.2f}€",
+        reserve_note=reserve_note,
+        has_mutuelle=data.get('mutuelle_part_pat', 0) > 0,
+        membre_bu=membre_bu or "Gwenaëlle CHARPENTIER",
+    )
+
+    pdf_bytes = HTML(string=html_str).write_pdf()
+
+    # Cleanup chart
     if chart_path:
-        pdf.image(chart_path, x=cx + mw - 72, y=y0 - 3, w=72)
         try:
             os.unlink(chart_path)
         except Exception:
             pass
 
-    # ── VOS FRAIS (dans la colonne gauche, pas full width) ──
-    y = max(y_left, y0 + 65) + 2
-
-    if data.get('total_frais_rembourses', 0) > 0:
-        pdf.set_font("D", 'B', 8.5)
-        pdf.set_text_color(50, 50, 50)
-        pdf.set_xy(mx, y)
-        pdf.cell(lw, 5, "VOS FRAIS :", ln=1)
-        y += 5.5
-
-        frais = []
-        if data.get('ik_amount', 0) > 0:
-            frais.append(("Indemnités Kilométriques", data['ik_amount']))
-        if data.get('igd_amount', 0) > 0:
-            frais.append(("Indemnités Grands Déplacements", data['igd_amount']))
-        if data.get('forfait_teletravail', 0) > 0:
-            frais.append((f"Forfait Télétravail ({data['jours_teletravail']}j x 2.70)", data['forfait_teletravail']))
-        if data.get('other_expenses', 0) > 0:
-            frais.append(("Autres Frais", data['other_expenses']))
-        for label, val in frais:
-            _dotted_line(pdf, mx, y, lw, lh, label, f"{val:,.2f}€", font_size=8)
-            y += lh
-        y += 2
-
-    # ── BRUT AVEC RÉSERVE (italique rose, fond rose clair) ──
-    if data.get('reserve_reintegree', False):
-        pdf.set_fill_color(ROSE_FOND_R, ROSE_FOND_G, ROSE_FOND_B)
-        pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
-        pdf.set_font("D", 'I', 9)
-        pdf.set_xy(mx, y)
-        pdf.cell(mw * 0.62, 8, "  BRUT AVEC RÉSERVE FINANCIÈRE*", fill=True)
-        pdf.set_font("D", 'B', 13)
-        pdf.cell(mw * 0.38, 8, f"{data['gross_salary']:,.2f}€", align='R', fill=True, ln=1)
-        pdf.set_text_color(0, 0, 0)
-        y += 10
-
-    # ── NET À PAYER (encadré rose fort, grosse valeur) ──
-    pdf.set_fill_color(ROSE_R, ROSE_G, ROSE_B)
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("D", 'B', 10)
-    pdf.set_xy(mx, y)
-    pdf.cell(mw * 0.55, 12, "  NET À PAYER AVANT IMPÔTS", fill=True)
-    pdf.set_font("D", 'B', 18)
-    pdf.cell(mw * 0.45, 12, f"{data['net_payable']:,.2f}€", align='R', fill=True, ln=1)
-    pdf.set_text_color(0, 0, 0)
-    y += 14
-
-    # ── NOTE ──
-    if data.get('reserve_brute', 0) > 0:
-        if not data.get('reserve_reintegree', False):
-            pdf.set_font("D", 'B', 7)
-            pdf.set_text_color(60, 60, 60)
-            pdf.set_xy(mx, y)
-            pdf.cell(mw, 4, f"*La {label_res} : {data['reserve_brute']:,.2f}€", ln=1)
-            y += 4.5
-        pdf.set_font("D", 'I', 5.5)
-        pdf.set_text_color(130, 130, 130)
-        pdf.set_xy(mx, y)
-        pdf.multi_cell(mw, 2.8, f"Réserve financière obligatoire et réglementée définie par la Convention Collective Nationale de Portage Salarial pour vos besoins de prospection et éventuellement l'indemnité de fin de contrat de travail.")
-        pdf.set_text_color(0, 0, 0)
-
-    if data.get('mutuelle_part_pat', 0) > 0:
-        pdf.set_font("D", 'I', 5.5)
-        pdf.set_text_color(130, 130, 130)
-        pdf.set_x(mx)
-        pdf.cell(mw, 3, "Mutuelle d'entreprise incluse, prise en charge à 50 % dans la simulation présentée.", ln=1)
-        pdf.set_text_color(0, 0, 0)
-
-    # ── FOOTER GRIS ──
-    pdf.set_fill_color(60, 60, 60)
-    pdf.rect(0, footer_y, pw, ph - footer_y, 'F')
-
-    if os.path.exists(LOGO_PATH):
-        pdf.image(LOGO_PATH, x=12, y=footer_y + 5, w=30)
-
-    sig = membre_bu if membre_bu else "Gwenaëlle CHARPENTIER"
-    pdf.set_xy(48, footer_y + 5)
-    pdf.set_font("D", 'I', 9)
-    pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
-    pdf.cell(90, 5, sig, ln=1)
-    pdf.set_xy(48, pdf.get_y())
-    pdf.set_font("D", "", 7)
-    pdf.set_text_color(190, 190, 190)
-    pdf.cell(90, 4, "Directrice du Pôle Portage Salarial", ln=1)
-    pdf.set_xy(48, pdf.get_y())
-    pdf.set_text_color(150, 150, 150)
-    pdf.cell(90, 4, "01 85 53 47 00", ln=1)
-    pdf.set_text_color(0, 0, 0)
-
-    out = pdf.output(dest='S')
-    return out.encode('latin-1', 'replace') if isinstance(out, str) else out
+    return pdf_bytes
 
 # --- UI Streamlit ---
 

@@ -749,7 +749,7 @@ def _generer_chart_png(data):
     ax.add_artist(plt.Circle((0, 0), 0.38, fc='white'))
     plt.tight_layout()
     tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-    plt.savefig(tmp.name, dpi=200, bbox_inches='tight', facecolor='white', transparent=False)
+    plt.savefig(tmp.name, dpi=200, bbox_inches='tight', transparent=True)
     plt.close()
     return tmp.name
 

@@ -3,39 +3,23 @@
 <head>
 <meta charset="UTF-8">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,700&family=Playfair+Display:wght@700&display=swap');
-
   :root {
-    --rose: #E91E63;
-    --rose-light: #FCE4EC;
-    --rose-mid: #F48FB1;
-    --charcoal: #2D2D2D;
-    --charcoal-light: #3D3D3D;
-    --white: #FFFFFF;
-    --gray-50: #FAFAFA;
-    --gray-100: #F5F5F5;
-    --gray-300: #E0E0E0;
-    --gray-400: #BDBDBD;
-    --gray-500: #9E9E9E;
-    --gray-600: #757575;
-    --gray-700: #616161;
-    --blue: #4A90D9;
-    --text-dark: #333333;
-    --text-mid: #666666;
-    --text-light: #999999;
+    --pink: #e61b62;
+    --pink-light: #fce4ec;
+    --grey-bg: #e8e8e8;
+    --grey-dark: #555;
+    --text: #333;
+    --blue: #7ba3c6;
   }
 
-  @page {
-    size: A4;
-    margin: 0;
-  }
+  @page { size: A4; margin: 0; }
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   body {
-    font-family: 'DM Sans', sans-serif;
-    background: var(--charcoal);
-    color: var(--text-dark);
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: var(--text);
+    background: var(--grey-dark);
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
@@ -43,493 +27,364 @@
   .page {
     width: 210mm;
     height: 297mm;
-    position: relative;
-    overflow: hidden;
-    background: var(--charcoal);
-  }
-
-  /* ═══════════════════════════════════════════
-     BANNER ROSE
-     ═══════════════════════════════════════════ */
-  .banner {
-    background: linear-gradient(135deg, var(--rose) 0%, #C2185B 100%);
-    height: 32mm;
-    display: flex;
-    align-items: center;
-    padding: 0 8mm;
+    background: #fff;
+    padding: 8mm 10mm;
     position: relative;
   }
 
-  .banner::after {
-    content: '';
-    position: absolute;
-    bottom: -4mm;
-    left: 0;
-    right: 0;
-    height: 8mm;
-    background: linear-gradient(180deg, rgba(45,45,45,0.3), transparent);
-    pointer-events: none;
-  }
-
-  .banner-logo {
-    width: 42mm;
-    flex-shrink: 0;
-  }
-
-  .banner-logo img {
-    height: 18mm;
-    filter: brightness(10);
-  }
-
-  .banner-params {
-    display: flex;
-    flex: 1;
-    justify-content: space-around;
-    padding-left: 5mm;
-  }
-
-  .banner-param {
+  /* ── HEADER LOGO ── */
+  .header {
     text-align: center;
-    color: rgba(255,255,255,0.75);
-  }
-
-  .banner-param .label {
-    font-size: 6.5pt;
-    font-weight: 500;
-    text-transform: uppercase;
-    letter-spacing: 0.5pt;
-    margin-bottom: 1.5mm;
-    display: block;
-  }
-
-  .banner-param .value {
-    font-size: 14pt;
-    font-weight: 700;
-    color: var(--white);
-    display: block;
-    letter-spacing: -0.3pt;
-  }
-
-  /* ═══════════════════════════════════════════
-     CONTENEUR BLANC
-     ═══════════════════════════════════════════ */
-  .card {
-    background: var(--white);
-    margin: 5mm 7mm 0 7mm;
-    border-radius: 3mm;
-    padding: 6mm 7mm 5mm 7mm;
-    position: relative;
-    box-shadow: 0 2mm 8mm rgba(0,0,0,0.25);
-    min-height: 195mm;
-  }
-
-  /* ═══════════════════════════════════════════
-     TITRE
-     ═══════════════════════════════════════════ */
-  .title {
-    text-align: center;
-    margin-bottom: 5mm;
-  }
-
-  .title h1 {
-    font-family: 'Playfair Display', serif;
-    font-size: 20pt;
-    color: var(--rose);
-    letter-spacing: 3pt;
-    margin-bottom: 1mm;
-  }
-
-  .title .subtitle {
-    font-size: 9pt;
-    color: var(--gray-600);
-    font-weight: 400;
-  }
-
-  /* ═══════════════════════════════════════════
-     DEUX COLONNES
-     ═══════════════════════════════════════════ */
-  .two-cols {
-    display: flex;
-    gap: 5mm;
     margin-bottom: 4mm;
   }
 
-  .col-left {
-    flex: 1;
-    min-width: 52%;
+  .header img { height: 14mm; }
+
+  /* ── BARRE PARAMETRES ── */
+  .params-bar {
+    background: var(--grey-bg);
+    border-radius: 8mm;
+    display: flex;
+    justify-content: space-around;
+    padding: 3mm 2mm;
+    margin-bottom: 4mm;
+    text-align: center;
   }
 
+  .param-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.5mm;
+  }
+
+  .param-item .label {
+    font-size: 6.5pt;
+    font-weight: 600;
+    color: #666;
+  }
+
+  .pill {
+    background: var(--pink);
+    color: #fff;
+    padding: 1.2mm 4mm;
+    border-radius: 4mm;
+    font-size: 9pt;
+    font-weight: 700;
+  }
+
+  /* ── TITRE ── */
+  .main-title {
+    text-align: center;
+    color: var(--pink);
+    font-size: 16pt;
+    font-weight: 800;
+    letter-spacing: 1pt;
+    margin: 3mm 0 1.5mm 0;
+  }
+
+  .main-sub {
+    text-align: center;
+    font-size: 8pt;
+    color: #888;
+    margin-bottom: 3mm;
+  }
+
+  /* ── BOITE GRISE PRINCIPALE ── */
+  .main-box {
+    background: var(--grey-bg);
+    border-radius: 5mm;
+    padding: 5mm 6mm;
+    display: flex;
+    gap: 4mm;
+    margin-bottom: 4mm;
+  }
+
+  .col-left { flex: 1; }
   .col-right {
-    width: 44%;
+    width: 40%;
     display: flex;
     flex-direction: column;
     align-items: center;
   }
 
-  /* ═══════════════════════════════════════════
-     LIGNES AVEC POINTILLÉS
-     ═══════════════════════════════════════════ */
-  .dotted-line {
+  /* ── LIGNES DETAIL ── */
+  .row {
     display: flex;
-    align-items: baseline;
-    font-size: 8.5pt;
-    color: var(--text-mid);
-    line-height: 2.4;
+    align-items: flex-end;
+    font-size: 7.5pt;
+    line-height: 2.2;
   }
 
-  .dotted-line .dl-label {
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
+  .row .lab { white-space: nowrap; }
 
-  .dotted-line .dl-dots {
+  .row .dots {
     flex: 1;
-    border-bottom: 1px dotted var(--gray-400);
-    margin: 0 2mm;
-    min-width: 5mm;
+    border-bottom: 1.5px dotted #999;
+    margin: 0 1.5mm;
     position: relative;
     top: -1.5pt;
   }
 
-  .dotted-line .dl-value {
+  .row .val {
     white-space: nowrap;
-    flex-shrink: 0;
-    font-weight: 500;
-    color: var(--text-dark);
-    font-variant-numeric: tabular-nums;
+    font-weight: 700;
   }
 
-  /* Ligne Salaire Brut */
-  .dotted-line.brut {
-    font-size: 9.5pt;
+  .row.brut {
     font-weight: 700;
-    margin-top: 1mm;
+    font-size: 8pt;
+    margin-top: 2mm;
+  }
+
+  .row.indent { padding-left: 4mm; }
+
+  .sec-title {
+    font-weight: 700;
+    font-size: 8pt;
+    margin-top: 3mm;
     margin-bottom: 1mm;
   }
 
-  .dotted-line.brut .dl-label,
-  .dotted-line.brut .dl-value {
-    color: var(--text-dark);
-    font-weight: 700;
-  }
-
-  /* Séparateur fin */
-  .sep {
-    border: none;
-    border-top: 0.5pt solid var(--gray-300);
-    margin: 2mm 0;
-  }
-
-  /* ═══════════════════════════════════════════
-     CAMEMBERT
-     ═══════════════════════════════════════════ */
+  /* ── CHART ── */
   .chart-title {
-    font-size: 8pt;
+    font-size: 7pt;
     font-weight: 700;
-    color: var(--text-dark);
-    text-align: center;
+    color: #666;
     margin-bottom: 2mm;
   }
 
-  .chart-img {
-    width: 58mm;
-    height: auto;
-  }
+  .chart-img { width: 42mm; }
 
-  .chart-legend {
-    display: flex;
-    gap: 3mm;
-    flex-wrap: wrap;
-    justify-content: center;
+  .legend {
+    font-size: 5.5pt;
+    color: #555;
     margin-top: 2mm;
+    display: flex;
+    flex-direction: column;
+    gap: 1mm;
   }
 
-  .legend-item {
+  .leg-item {
     display: flex;
     align-items: center;
     gap: 1mm;
-    font-size: 6pt;
-    color: var(--gray-700);
   }
 
-  .legend-dot {
-    width: 2.2mm;
-    height: 2.2mm;
-    border-radius: 0.5mm;
+  .leg-dot {
+    width: 2mm;
+    height: 2mm;
+    border-radius: 0.3mm;
     flex-shrink: 0;
   }
 
-  /* ═══════════════════════════════════════════
-     SECTION FRAIS
-     ═══════════════════════════════════════════ */
-  .section-title {
+  /* ── TOTAUX (PILLS CENTREES) ── */
+  .totals {
+    text-align: center;
+    margin-bottom: 3mm;
+  }
+
+  .total-block { margin-bottom: 2.5mm; }
+
+  .total-label {
+    color: var(--pink);
+    font-weight: 700;
     font-size: 9pt;
+    margin-bottom: 1mm;
+  }
+
+  .total-pill {
+    background: var(--pink);
+    color: #fff;
+    font-size: 14pt;
     font-weight: 700;
-    color: var(--text-dark);
-    margin-bottom: 1.5mm;
-    margin-top: 2mm;
-    text-transform: uppercase;
-    letter-spacing: 0.5pt;
-  }
-
-  /* ═══════════════════════════════════════════
-     ENCADRÉS RÉSULTAT
-     ═══════════════════════════════════════════ */
-  .result-box {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 2.5mm 4mm;
-    border-radius: 1.5mm;
-    margin-top: 2mm;
-  }
-
-  .result-box.light {
-    background: var(--rose-light);
-  }
-
-  .result-box.light .rb-label {
-    font-size: 8.5pt;
-    font-weight: 600;
-    font-style: italic;
-    color: var(--rose);
-  }
-
-  .result-box.light .rb-value {
-    font-size: 13pt;
-    font-weight: 700;
-    color: var(--rose);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .result-box.strong {
-    background: linear-gradient(135deg, var(--rose) 0%, #C2185B 100%);
-    padding: 3mm 4mm;
-    box-shadow: 0 1mm 4mm rgba(233,30,99,0.3);
-  }
-
-  .result-box.strong .rb-label {
-    font-size: 10pt;
-    font-weight: 700;
-    color: var(--white);
+    padding: 2mm 8mm;
+    border-radius: 6mm;
+    display: inline-block;
     letter-spacing: 0.3pt;
   }
 
-  .result-box.strong .rb-value {
-    font-size: 17pt;
-    font-weight: 700;
-    color: var(--white);
-    font-variant-numeric: tabular-nums;
+  .total-pill.small {
+    font-size: 11pt;
+    padding: 1.5mm 6mm;
   }
 
-  /* ═══════════════════════════════════════════
-     NOTES
-     ═══════════════════════════════════════════ */
-  .notes {
-    margin-top: 3mm;
-    font-size: 6pt;
-    color: var(--gray-500);
-    line-height: 1.6;
-    font-style: italic;
+  /* ── NOTE RESERVE ── */
+  .reserve-box {
+    background: var(--grey-bg);
+    border-radius: 3mm;
+    padding: 3mm 4mm;
+    margin-bottom: 3mm;
+    font-size: 5.5pt;
+    color: #666;
+    line-height: 1.5;
   }
 
-  .notes strong {
-    color: var(--gray-700);
-    font-style: normal;
-    font-size: 6.5pt;
+  .reserve-box strong {
+    font-size: 7pt;
+    color: var(--text);
+    display: block;
+    margin-bottom: 1mm;
   }
 
-  /* ═══════════════════════════════════════════
-     FOOTER
-     ═══════════════════════════════════════════ */
-  .footer {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 28mm;
-    background: linear-gradient(135deg, var(--charcoal-light) 0%, var(--charcoal) 100%);
+  /* ── FOOTER CONTACT ── */
+  .contact {
     display: flex;
     align-items: center;
-    padding: 0 10mm;
     gap: 5mm;
+    padding-top: 3mm;
+    border-top: 0.3pt solid #ddd;
+    position: absolute;
+    bottom: 8mm;
+    left: 10mm;
+    right: 10mm;
   }
 
-  .footer-logo img {
-    height: 14mm;
-    opacity: 0.9;
-  }
+  .contact-logo img { height: 12mm; }
 
-  .footer-sig {
-    display: flex;
-    flex-direction: column;
-    gap: 0.8mm;
-  }
-
-  .footer-sig .sig-name {
-    font-size: 10pt;
+  .contact-info .name {
+    color: var(--pink);
     font-weight: 700;
-    font-style: italic;
-    color: var(--rose);
+    font-size: 9pt;
   }
 
-  .footer-sig .sig-title {
-    font-size: 7pt;
-    color: rgba(255,255,255,0.55);
-    font-weight: 400;
+  .contact-info .title {
+    font-size: 6.5pt;
+    font-weight: 600;
+    color: #444;
   }
 
-  .footer-sig .sig-phone {
-    font-size: 7pt;
-    color: rgba(255,255,255,0.35);
-    letter-spacing: 0.5pt;
+  .contact-info .phone,
+  .contact-info .email {
+    font-size: 6pt;
+    color: #888;
+    margin-top: 0.5mm;
+  }
+
+  .contact-info .email a {
+    color: #888;
+    text-decoration: underline;
   }
 </style>
 </head>
 <body>
 <div class="page">
 
-  <!-- BANNER -->
-  <div class="banner">
-    <div class="banner-logo">
-      {% if logo_path %}<img src="file://{{ logo_path }}" alt="Signe+">{% endif %}
+  <!-- HEADER -->
+  <div class="header">
+    {% if logo_path %}<img src="file://{{ logo_path }}">{% endif %}
+  </div>
+
+  <!-- PARAMETRES -->
+  <div class="params-bar">
+    <div class="param-item">
+      <span class="label">TJM</span>
+      <div class="pill">{{ tjm }}€</div>
     </div>
-    <div class="banner-params">
-      <div class="banner-param">
-        <span class="label">TJM</span>
-        <span class="value">{{ tjm }}€</span>
+    <div class="param-item">
+      <span class="label">Nb de jours / mois</span>
+      <div class="pill">{{ days }}j</div>
+    </div>
+    <div class="param-item">
+      <span class="label">Frais de gestion</span>
+      <div class="pill">{{ frais_gestion }}%</div>
+    </div>
+    <div class="param-item">
+      <span class="label">Tickets-Restaurants</span>
+      <div class="pill">{{ tr_label }}</div>
+    </div>
+  </div>
+
+  <!-- TITRE -->
+  <div class="main-title">SIMULATION</div>
+  <div class="main-sub">{{ name }}</div>
+
+  <!-- BOITE PRINCIPALE -->
+  <div class="main-box">
+    <div class="col-left">
+
+      {% for item in salary_lines %}
+      <div class="row">
+        <span class="lab">{{ item.label }} :</span>
+        <span class="dots"></span>
+        <span class="val">{{ item.value }}</span>
       </div>
-      <div class="banner-param">
-        <span class="label">Nb de jours / mois</span>
-        <span class="value">{{ days }}j</span>
+      {% endfor %}
+
+      <div class="row brut">
+        <span class="lab">Salaire Brut :</span>
+        <span class="dots"></span>
+        <span class="val">{{ gross_salary }}</span>
       </div>
-      <div class="banner-param">
-        <span class="label">Frais de gestion</span>
-        <span class="value">{{ frais_gestion }}%</span>
+
+      <div class="row indent">
+        <span class="lab">Charges Salariales :</span>
+        <span class="dots"></span>
+        <span class="val">{{ employee_charges }}</span>
       </div>
-      <div class="banner-param">
-        <span class="label">Tickets-Restaurants</span>
-        <span class="value">{{ tr_label }}</span>
+      <div class="row indent">
+        <span class="lab">Charges Patronales :</span>
+        <span class="dots"></span>
+        <span class="val">{{ employer_charges }}</span>
+      </div>
+
+      {% if frais_lines %}
+      <div class="sec-title">VOS FRAIS :</div>
+      {% for item in frais_lines %}
+      <div class="row indent">
+        <span class="lab">{{ item.label }} :</span>
+        <span class="dots"></span>
+        <span class="val">{{ item.value }}</span>
+      </div>
+      {% endfor %}
+      {% endif %}
+
+    </div>
+
+    <div class="col-right">
+      <div class="chart-title">Ventilation chiffre d'affaires</div>
+      {% if chart_path %}<img class="chart-img" src="file://{{ chart_path }}">{% endif %}
+      <div class="legend">
+        <div class="leg-item"><div class="leg-dot" style="background:var(--blue)"></div>Net à payer</div>
+        <div class="leg-item"><div class="leg-dot" style="background:#999"></div>Frais de gestion</div>
+        <div class="leg-item"><div class="leg-dot" style="background:var(--pink)"></div>Cotisations Sociales et Patronales</div>
+        {% if has_provision %}<div class="leg-item"><div class="leg-dot" style="background:#F48FB1"></div>Provision Réserve</div>{% endif %}
       </div>
     </div>
   </div>
 
-  <!-- CARD -->
-  <div class="card">
-
-    <!-- TITRE -->
-    <div class="title">
-      <h1>SIMULATION</h1>
-      <div class="subtitle">{{ name }}</div>
-    </div>
-
-    <!-- DEUX COLONNES -->
-    <div class="two-cols">
-      <div class="col-left">
-
-        {% for item in salary_lines %}
-        <div class="dotted-line">
-          <span class="dl-label">{{ item.label }}</span>
-          <span class="dl-dots"></span>
-          <span class="dl-value">{{ item.value }}</span>
-        </div>
-        {% endfor %}
-
-        <div class="dotted-line brut">
-          <span class="dl-label">Salaire Brut</span>
-          <span class="dl-dots"></span>
-          <span class="dl-value">{{ gross_salary }}</span>
-        </div>
-
-        <hr class="sep">
-
-        <div class="dotted-line">
-          <span class="dl-label">Charges Salariales</span>
-          <span class="dl-dots"></span>
-          <span class="dl-value">{{ employee_charges }}</span>
-        </div>
-        <div class="dotted-line">
-          <span class="dl-label">Charges Patronales</span>
-          <span class="dl-dots"></span>
-          <span class="dl-value">{{ employer_charges }}</span>
-        </div>
-
-        {% if frais_lines %}
-        <div class="section-title" style="margin-top: 4mm;">Vos frais :</div>
-        {% for item in frais_lines %}
-        <div class="dotted-line">
-          <span class="dl-label">{{ item.label }}</span>
-          <span class="dl-dots"></span>
-          <span class="dl-value">{{ item.value }}</span>
-        </div>
-        {% endfor %}
-        {% endif %}
-
-      </div>
-
-      <div class="col-right">
-        <div class="chart-title">Ventilation chiffre d'affaires</div>
-        {% if chart_path %}
-        <img class="chart-img" src="file://{{ chart_path }}">
-        {% endif %}
-        <div class="chart-legend">
-          <div class="legend-item">
-            <div class="legend-dot" style="background: var(--blue);"></div>
-            <span>Net à payer</span>
-          </div>
-          <div class="legend-item">
-            <div class="legend-dot" style="background: var(--gray-500);"></div>
-            <span>Frais de gestion</span>
-          </div>
-          <div class="legend-item">
-            <div class="legend-dot" style="background: var(--rose);"></div>
-            <span>Cotisations Sociales et Patronales</span>
-          </div>
-          {% if has_provision %}
-          <div class="legend-item">
-            <div class="legend-dot" style="background: var(--rose-mid);"></div>
-            <span>Provision Réserve</span>
-          </div>
-          {% endif %}
-        </div>
-      </div>
-    </div>
-
-    <!-- RÉSULTATS -->
+  <!-- TOTAUX -->
+  <div class="totals">
     {% if show_brut_reserve %}
-    <div class="result-box light">
-      <span class="rb-label">BRUT AVEC RÉSERVE FINANCIÈRE*</span>
-      <span class="rb-value">{{ gross_salary }}</span>
+    <div class="total-block">
+      <div class="total-label">BRUT AVEC RÉSERVE FINANCIÈRE*</div>
+      <div class="total-pill small">{{ gross_salary }}</div>
     </div>
     {% endif %}
-
-    <div class="result-box strong">
-      <span class="rb-label">NET À PAYER AVANT IMPÔTS</span>
-      <span class="rb-value">{{ net_payable }}</span>
+    <div class="total-block">
+      <div class="total-label">NET À PAYER AVANT IMPÔTS</div>
+      <div class="total-pill">{{ net_payable }}</div>
     </div>
-
-    <!-- NOTES -->
-    <div class="notes">
-      {% if reserve_note %}
-      <strong>{{ reserve_note }}</strong><br>
-      {% endif %}
-      Réserve financière obligatoire et réglementée définie par la Convention Collective Nationale
-      de Portage Salarial pour vos besoins de prospection et éventuellement l'indemnité de fin de
-      contrat de travail.
-      {% if has_mutuelle %}<br>Mutuelle d'entreprise incluse, prise en charge à 50 % dans la simulation présentée.{% endif %}
-    </div>
-
   </div>
 
-  <!-- FOOTER -->
-  <div class="footer">
-    <div class="footer-logo">
-      {% if logo_path %}<img src="file://{{ logo_path }}" alt="Signe+">{% endif %}
+  <!-- NOTE RESERVE -->
+  <div class="reserve-box">
+    {% if reserve_note %}<strong>{{ reserve_note }}</strong>{% endif %}
+    Réserve financière obligatoire et réglementée définie par la Convention Collective Nationale de Portage Salarial
+    pour vos besoins de prospection et éventuellement l'indemnité de fin de contrat de travail.
+    {% if has_mutuelle %}<br>Mutuelle d'entreprise incluse, prise en charge à 50 % dans la simulation présentée.{% endif %}
+  </div>
+
+  <!-- FOOTER CONTACT -->
+  <div class="contact">
+    <div class="contact-logo">
+      {% if logo_path %}<img src="file://{{ logo_path }}">{% endif %}
     </div>
-    <div class="footer-sig">
-      <span class="sig-name">{{ membre_bu }}</span>
-      <span class="sig-title">Directrice du Pôle Portage Salarial</span>
-      <span class="sig-phone">01 85 53 47 00</span>
+    <div class="contact-info">
+      <div class="name">{{ membre_bu }}</div>
+      <div class="title">Directrice du Pôle Portage Salarial</div>
+      <div class="phone">📞 01 85 53 47 00</div>
+      {% if consultant_email %}<div class="email">✉️ <a href="mailto:{{ consultant_email }}">{{ consultant_email }}</a></div>{% endif %}
     </div>
   </div>
 

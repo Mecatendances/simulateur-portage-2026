@@ -1313,17 +1313,23 @@ with tab_simu:
                           + results['tr_part_pat'] + results['tr_part_sal'])
         provision_viz = results['provision_reserve_financiere'] if not results['reserve_reintegree'] else 0
 
-        labels = ['Net a payer', 'Frais de gestion', 'Cotisations Sociales & Patronales', 'Provision Reserve']
+        labels = ['Net à payer', 'Frais de gestion', 'Cotisations Sociales & Patronales', 'Provision Réserve']
         values = [results['net_payable'], frais_gestion_total, cotis_sociales, provision_viz]
-        colors = ['#E91E63', '#757575', '#F48FB1', '#F8BBD0']
+        colors = ['#4A90D9', '#9E9E9E', '#E91E63', '#F48FB1']
 
         fig = go.Figure(data=[go.Pie(
             labels=labels, values=values, hole=.4,
-            marker=dict(colors=colors),
-            textinfo='label+percent',
-            textposition='outside'
+            marker=dict(colors=colors, line=dict(color='white', width=2)),
+            textinfo='percent',
+            textposition='inside',
+            textfont=dict(size=13, color='white'),
+            hoverinfo='label+value+percent',
         )])
-        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
+        fig.update_layout(
+            margin=dict(t=10, b=10, l=10, r=10),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(size=11)),
+        )
         st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("### Export")

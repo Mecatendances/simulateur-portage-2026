@@ -34,6 +34,17 @@ IGD_BAREME_2026 = {
     "24_a_72_mois":  {"repas": 15.00, "nuitee_paris": 53.60, "nuitee_province": 39.80},
 }
 
+# Jours ouvres par mois (2026 - jours feries France metropolitaine)
+JOURS_OUVRES_2026 = {
+    1: 21, 2: 20, 3: 22, 4: 21, 5: 18, 6: 22,
+    7: 22, 8: 21, 9: 22, 10: 22, 11: 20, 12: 22,
+}
+MOIS_LABELS = {
+    1: "Janvier", 2: "Février", 3: "Mars", 4: "Avril",
+    5: "Mai", 6: "Juin", 7: "Juillet", 8: "Août",
+    9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre",
+}
+
 # Membres BU Portage Salarial
 MEMBRES_BU = [
     "Gwenaelle CHARPENTIER - Directrice du Pole Portage Salarial",
@@ -315,7 +326,8 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                      nb_titres_restaurant=0, frais_intermediation_pct=0.0,
                      jours_teletravail=0, effectif_sup_50=False,
                      frais_partages_pct=0.0, commission_apporteur=0.0,
-                     type_contrat="CDI", provision_cp=False):
+                     type_contrat="CDI", provision_cp=False,
+                     nb_journees=0, nb_jours_ouvres=22):
 
     cfg_base = st.session_state.cfg_base_salary
     rate_gestion = st.session_state.cfg_frais_gestion / 100.0
@@ -358,14 +370,18 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     # Total des frais rembourses
     total_frais_rembourses = ik_amount + igd_amount + forfait_teletravail + other_expenses
 
-    base_salary = cfg_base * (days_worked_week / 5.0)
+    # Salaire de base proratise selon jours ouvres du mois
+    if nb_journees > 0 and nb_jours_ouvres > 0:
+        base_salary = cfg_base * (nb_journees / nb_jours_ouvres)
+    else:
+        base_salary = cfg_base * (days_worked_week / 5.0)
     prime_apport = base_salary * rate_prime
 
     # Reserve financiere (CDI) / Indemnite de precarite (CDD)
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
     if type_contrat == "CDD":
-        # CDD : Indemnite precarite = (Base + Prime) x 10%
-        reserve_brute = (base_salary + prime_apport) * rate_reserve
+        # CDD : Precarite = (Base + Prime + Complement) x 10% — calculee dans la convergence
+        reserve_brute = 0  # sera recalcule dans la convergence
     else:
         # CDI : Reserve financiere = Base x 10%
         reserve_brute = base_salary * rate_reserve
@@ -374,25 +390,36 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     taux_charges_override = st.session_state.cfg_taux_charges_override / 100.0
     reserve_reintegree = not use_reserve
 
+    is_cdd = (type_contrat == "CDD")
+
     if taux_charges_override > 0:
         taux_charges = taux_charges_override
     else:
         taux_charges = 0.55
         for _ in range(50):
             pool = budget_salaire / (1 + taux_charges)
-            ct_est = max(0, pool - base_salary - prime_apport - reserve_brute)
+
+            if is_cdd:
+                # CDD : precarite = (base + prime + complement) x 10%
+                # => pool = (1 + rate_reserve) x (base + prime + complement)
+                # => complement = pool / (1 + rate_reserve) - base - prime
+                ct_est = max(0, pool / (1 + rate_reserve) - base_salary - prime_apport)
+                res_est = (base_salary + prime_apport + ct_est) * rate_reserve
+            else:
+                # CDI : reserve = base x 10% (fixe)
+                ct_est = max(0, pool - base_salary - prime_apport - reserve_brute)
+                res_est = reserve_brute
 
             if reserve_reintegree:
-                # Reserve/precarite DANS le brut
-                brut_components = base_salary + prime_apport + reserve_brute + ct_est
-                if type_contrat == "CDD":
-                    # CDD : ICP = (base + prime + precarite) x 10% seulement
-                    icp_ = (base_salary + prime_apport + reserve_brute) * rate_cp
-                    brut_est = brut_components + icp_
+                brut_components = base_salary + prime_apport + res_est + ct_est
+                if is_cdd:
+                    # CDD : ICP = (base + prime + precarite) x 10%
+                    icp_ = (base_salary + prime_apport + res_est) * rate_cp
                 else:
                     # CDI : ICP = (base + prime + reserve + complement) x 10%
                     icp_ = brut_components * rate_cp
-                    brut_est = brut_components + icp_
+                brut_est = brut_components + icp_
+
                 ta = min(brut_est, pmss)
                 tb = max(0, brut_est - pmss)
                 pd_ = round(ta * 0.0159, 2)
@@ -403,7 +430,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 ch = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
                 tn = ch / pool if pool > 0 else 0
             else:
-                # Reserve HORS brut : charges marginales sur reserve
+                # Reserve/precarite HORS brut : charges marginales
                 brut_components = base_salary + prime_apport + ct_est
                 brut_est = brut_components * (1 + rate_cp)
                 ta = min(brut_est, pmss)
@@ -415,7 +442,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 fs_ = round(pt_ * 0.08, 2)
                 icp_ = brut_components * rate_cp
                 ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
-                reserve_brut_cp = reserve_brute * (1 + rate_cp)
+                reserve_brut_cp = res_est * (1 + rate_cp)
                 brut_avec_reserve = brut_est + reserve_brut_cp
                 ta2 = min(brut_avec_reserve, pmss)
                 tb2 = max(0, brut_avec_reserve - pmss)
@@ -424,7 +451,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 pt2 = pd2 + mutuelle_part_pat + ps2
                 c2_ = calculer_cotisations(brut_avec_reserve, pmss, atmp_rate, fnal_rate, pt2)
                 fs2 = round(pt2 * 0.08, 2)
-                ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + reserve_brute * rate_cp + mutuelle_part_pat * (reserve_brute / pool if pool > 0 else 0)
+                ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + res_est * rate_cp + mutuelle_part_pat * (res_est / pool if pool > 0 else 0)
                 tn = (ch_brut + ch_reserve) / pool if pool > 0 else 0
 
             if abs(tn - taux_charges) < 0.00001:
@@ -434,21 +461,26 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
 
     # --- Resultats depuis le taux converge ---
     pool = budget_salaire / (1 + taux_charges)
-    complement_total = max(0, pool - base_salary - prime_apport - reserve_brute)
+
+    if is_cdd:
+        # CDD : complement = pool / (1 + rate_reserve) - base - prime
+        complement_total = max(0, pool / (1 + rate_reserve) - base_salary - prime_apport)
+        reserve_brute = (base_salary + prime_apport + complement_total) * rate_reserve
+    else:
+        complement_total = max(0, pool - base_salary - prime_apport - reserve_brute)
+
     complement_remuneration = complement_total / (1 + rate_prime)
     complement_apport_affaires = complement_total - complement_remuneration
 
     if reserve_reintegree:
-        if type_contrat == "CDD":
-            # CDD reintegree : ICP = (base + prime + precarite) x 10%
+        brut_base = base_salary + prime_apport + reserve_brute + complement_total
+        if is_cdd:
+            # CDD : ICP = (base + prime + precarite) x 10%
             indemnite_cp = (base_salary + prime_apport + reserve_brute) * rate_cp
-            brut_base = base_salary + prime_apport + reserve_brute + complement_total
-            gross_salary = brut_base + indemnite_cp
         else:
-            # CDI reintegree : ICP = (base + prime + reserve + complement) x 10%
-            brut_base = base_salary + prime_apport + reserve_brute + complement_total
+            # CDI : ICP = (base + prime + reserve + complement) x 10%
             indemnite_cp = brut_base * rate_cp
-            gross_salary = brut_base + indemnite_cp
+        gross_salary = brut_base + indemnite_cp
     else:
         # Reserve/precarite hors brut (provisionnee)
         brut_base = base_salary + prime_apport + complement_total
@@ -895,13 +927,25 @@ with st.sidebar:
     type_contrat = st.radio("Type de contrat", ["CDI", "CDD"], horizontal=True)
     temps_travail = st.radio("Temps de travail", ["Complet", "Partiel"], horizontal=True)
 
+    # Mois et jours ouvres
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        mois_options = [f"{MOIS_LABELS[m]} 2026" for m in range(1, 13)]
+        mois_selectionne = st.selectbox("Mois", mois_options, index=2)  # Mars par defaut
+        mois_num = mois_options.index(mois_selectionne) + 1
+    with col_m2:
+        jours_ouvres_defaut = JOURS_OUVRES_2026.get(mois_num, 22)
+        nb_jours_ouvres = st.number_input("Jours ouvrés du mois", value=jours_ouvres_defaut,
+                                           step=1, min_value=1, max_value=31)
+
     col_j1, col_j2 = st.columns(2)
     with col_j1:
-        nb_journees = st.number_input("Nb Journees", value=19, step=1, min_value=0)
+        nb_journees = st.number_input("Nb Journées", value=min(19, nb_jours_ouvres), step=1, min_value=0)
     with col_j2:
-        nb_demi_journees = st.number_input("Nb Demi-journees", value=0, step=1, min_value=0)
+        nb_demi_journees = st.number_input("Nb Demi-journées", value=0, step=1, min_value=0)
     days_worked_month = nb_journees + nb_demi_journees * 0.5
-    st.caption(f"Jours produits : **{days_worked_month}**")
+    st.caption(f"Jours produits : **{days_worked_month}** / {nb_jours_ouvres} ouvrés")
+    st.caption(f"Base proratisée : 2 374 × {nb_journees}/{nb_jours_ouvres} = **{2374 * nb_journees / nb_jours_ouvres:,.2f} €**")
 
     if temps_travail == "Partiel":
         days_worked_week = st.number_input("Jours / Sem", value=2.5, max_value=5.0, step=0.5)
@@ -1107,7 +1151,7 @@ results = calculate_salary(tjm, days_worked_month, days_worked_week,
                            ik_total, igd_total, expenses_other, use_reserve, use_mutuelle,
                            nb_titres_restaurant, frais_intermediation_pct, jours_teletravail,
                            effectif_sup_50, frais_partages_pct, commission_apporteur,
-                           type_contrat, provision_cp)
+                           type_contrat, provision_cp, nb_journees, nb_jours_ouvres)
 
 # Main : Onglets
 tab_simu, tab_config, tab_comm = st.tabs(["Resultats Simulation", "Configuration Globale", "Email & Explications"])

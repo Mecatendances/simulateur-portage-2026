@@ -1324,7 +1324,7 @@ with tab_simu:
         pdf_bytes = create_pdf(results, consultant_name, membre_bu)
         b64 = base64.b64encode(pdf_bytes).decode()
         href = (
-            f'<a href="data:application/octet-stream;base64,{b64}" download="simulation_{consultant_name}.pdf" style="text-decoration:none;">'
+            f'<a href="data:application/octet-stream;base64,{b64}" download="{consultant_nom}_{consultant_prenom}_SimulationPortageSigne+.pdf" style="text-decoration:none;">'
             f'<button style="width:100%; padding: 10px; background-color: #E91E63; color: white; border: none; border-radius: 5px; cursor: pointer;">'
             f'Telecharger le PDF</button></a>'
         )

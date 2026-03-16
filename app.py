@@ -918,7 +918,17 @@ st.set_page_config(page_title="Simulateur Portage Salarial 2026", layout="wide")
 # Sidebar
 with st.sidebar:
     st.title("Consultant")
-    consultant_name = st.text_input("Nom", "Consultant")
+    col_nom1, col_nom2 = st.columns(2)
+    with col_nom1:
+        consultant_prenom = st.text_input("Prénom", "")
+    with col_nom2:
+        consultant_nom = st.text_input("Nom", "")
+    consultant_name = f"{consultant_prenom} {consultant_nom}".strip() or "Consultant"
+
+    consultant_email = st.text_input("Email", "", placeholder="prenom.nom@email.com")
+    consultant_statut = st.selectbox("Statut", ["Prospect", "En cours de négociation", "Signé"])
+
+    st.markdown("---")
     tjm = st.number_input("TJM (EUR)", min_value=0, value=500, step=10)
     frais_intermediation_pct = st.number_input("Frais d'intermediation (%)", value=0.0, step=0.5, min_value=0.0)
 
@@ -990,52 +1000,66 @@ with st.sidebar:
         st.info(f"Taux IK : **{ik_rate_display:.3f} EUR/km**")
     st.session_state.cfg_ik_rate = ik_rate_display
 
-    # --- Calcul km via adresse ---
+    # --- Calcul km via adresse (avec autocomplétion) ---
     with st.expander("Calculer les km par adresse", expanded=False):
-        adresse_domicile = st.text_input("Adresse domicile", "", key="ik_domicile",
-                                          placeholder="Ex: 12 rue de la Paix, 75002 Paris")
-        adresse_mission = st.text_input("Adresse lieu de mission", "", key="ik_mission",
-                                         placeholder="Ex: La Defense, 92400 Courbevoie")
 
-        if st.button("Calculer le trajet", key="btn_calc_km"):
-            if adresse_domicile and adresse_mission:
-                with st.spinner("Recherche des adresses..."):
-                    geo_dom = geocoder_adresse(adresse_domicile)
-                    geo_mis = geocoder_adresse(adresse_mission)
-
-                if geo_dom and geo_mis:
-                    dom = geo_dom[0]
-                    mis = geo_mis[0]
-                    st.caption(f"Domicile : {dom['label']}")
-                    st.caption(f"Mission : {mis['label']}")
-
-                    with st.spinner("Calcul de l'itineraire..."):
-                        route = calculer_distance_osrm(dom['lat'], dom['lon'], mis['lat'], mis['lon'])
-
-                    if route:
-                        km_aller = route['distance_km']
-                        km_ar = round(km_aller * 2, 1)
-                        st.success(f"**Trajet : {km_aller} km** (aller) | **{km_ar} km AR** | ~{route['duree_min']:.0f} min")
-                        st.session_state['ik_km_calcule'] = km_ar
-                    else:
-                        st.error("Impossible de calculer l'itineraire. Verifiez les adresses.")
-                else:
-                    if not geo_dom:
-                        st.error("Adresse domicile non trouvee")
-                    if not geo_mis:
-                        st.error("Adresse mission non trouvee")
+        # Adresse domicile avec autocomplétion
+        saisie_dom = st.text_input("Rechercher adresse domicile", "",
+                                    key="saisie_dom", placeholder="Tapez une adresse...")
+        if saisie_dom and len(saisie_dom) >= 5:
+            suggestions_dom = geocoder_adresse(saisie_dom)
+            if suggestions_dom:
+                options_dom = [s['label'] for s in suggestions_dom]
+                choix_dom = st.selectbox("Sélectionner", options_dom, key="sel_dom")
+                idx_dom = options_dom.index(choix_dom)
+                st.session_state['geo_dom'] = suggestions_dom[idx_dom]
             else:
-                st.warning("Saisissez les deux adresses")
+                st.caption("Aucune adresse trouvée")
+
+        # Adresse mission avec autocomplétion
+        saisie_mis = st.text_input("Rechercher adresse mission", "",
+                                    key="saisie_mis", placeholder="Tapez une adresse...")
+        if saisie_mis and len(saisie_mis) >= 5:
+            suggestions_mis = geocoder_adresse(saisie_mis)
+            if suggestions_mis:
+                options_mis = [s['label'] for s in suggestions_mis]
+                choix_mis = st.selectbox("Sélectionner", options_mis, key="sel_mis")
+                idx_mis = options_mis.index(choix_mis)
+                st.session_state['geo_mis'] = suggestions_mis[idx_mis]
+            else:
+                st.caption("Aucune adresse trouvée")
+
+        # Bouton calcul
+        dom_ok = 'geo_dom' in st.session_state and st.session_state['geo_dom']
+        mis_ok = 'geo_mis' in st.session_state and st.session_state['geo_mis']
+
+        if dom_ok and mis_ok:
+            st.caption(f"📍 {st.session_state['geo_dom']['label']}")
+            st.caption(f"🏢 {st.session_state['geo_mis']['label']}")
+
+            if st.button("Calculer le trajet", key="btn_calc_km"):
+                dom = st.session_state['geo_dom']
+                mis = st.session_state['geo_mis']
+                with st.spinner("Calcul de l'itinéraire..."):
+                    route = calculer_distance_osrm(dom['lat'], dom['lon'], mis['lat'], mis['lon'])
+                if route:
+                    km_aller = route['distance_km']
+                    km_ar = round(km_aller * 2, 1)
+                    st.session_state['ik_km_calcule'] = km_ar
+                    st.session_state['ik_km_aller'] = km_aller
+                    st.session_state['ik_duree'] = route['duree_min']
+                else:
+                    st.error("Impossible de calculer l'itinéraire")
 
         if 'ik_km_calcule' in st.session_state and st.session_state['ik_km_calcule'] > 0:
-            st.info(f"Km AR calcule : **{st.session_state['ik_km_calcule']} km**")
+            st.success(f"**{st.session_state['ik_km_aller']} km** aller | **{st.session_state['ik_km_calcule']} km AR** | ~{st.session_state['ik_duree']:.0f} min")
 
-    # Km mensuel (manuel ou pre-rempli par le calcul)
-    default_km = st.session_state.get('ik_km_calcule', 0.0) * days_worked_month if 'ik_km_calcule' in st.session_state else 0.0
-    km_mensuel = st.number_input("Nb Kilometres ce mois", value=0.0, step=10.0,
-                                  help=f"Km AR/jour x jours = km mensuels" if default_km > 0 else "")
-    if default_km > 0 and km_mensuel == 0:
-        st.caption(f"Suggestion : {st.session_state['ik_km_calcule']} km/jour x {days_worked_month} jours = **{default_km:.0f} km**")
+    # Km mensuel
+    km_ar_jour = st.session_state.get('ik_km_calcule', 0.0)
+    suggestion_km = km_ar_jour * days_worked_month if km_ar_jour > 0 else 0.0
+    km_mensuel = st.number_input("Nb Kilomètres ce mois", value=0.0, step=10.0)
+    if suggestion_km > 0 and km_mensuel == 0:
+        st.caption(f"Suggestion : {km_ar_jour} km/jour × {days_worked_month} jours = **{suggestion_km:.0f} km**")
 
     if is_electrique:
         ik_total = km_mensuel * ik_rate_base * 1.20

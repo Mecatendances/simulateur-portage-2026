@@ -3,6 +3,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from fpdf import FPDF
 import base64
+import requests
+import tempfile
+import os
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # --- Baremes URSSAF 2026 ---
 BAREME_IK_VOITURE_2026 = {
@@ -21,10 +27,19 @@ BAREME_IK_MOTO_2026 = {
     5: {"jusqua_3000": 0.792, "de_3001_a_6000": 0.078, "au_dela_6000": 0.455},
 }
 
-# Baremes IGD URSSAF 2026
-IGD_REPAS = 21.60
-IGD_NUITEE_PROVINCE = 57.80
-IGD_NUITEE_PARIS = 76.70
+# Baremes IGD URSSAF 2026 - Complet avec duree de mission
+IGD_BAREME_2026 = {
+    "moins_3_mois":  {"repas": 21.40, "nuitee_paris": 76.60, "nuitee_province": 56.80},
+    "3_a_24_mois":   {"repas": 18.20, "nuitee_paris": 65.10, "nuitee_province": 48.30},
+    "24_a_72_mois":  {"repas": 15.00, "nuitee_paris": 53.60, "nuitee_province": 39.80},
+}
+
+# Membres BU Portage Salarial
+MEMBRES_BU = [
+    "Gwenaelle CHARPENTIER - Directrice du Pole Portage Salarial",
+    "Membre BU 2",
+    "Membre BU 3",
+]
 
 # Valeur faciale TR standard
 TR_VALEUR_FACIALE = 14.36
@@ -140,6 +155,10 @@ if 'cfg_taux_atmp' not in st.session_state:
     st.session_state.cfg_taux_atmp = 0.64
 if 'cfg_taux_charges_override' not in st.session_state:
     st.session_state.cfg_taux_charges_override = 0.0  # 0 = auto-calcul
+if 'cfg_pct_tel_internet' not in st.session_state:
+    st.session_state.cfg_pct_tel_internet = 50.0
+if 'cfg_pct_transport' not in st.session_state:
+    st.session_state.cfg_pct_transport = 50.0
 
 
 # --- Fonction RGDU ---
@@ -239,11 +258,64 @@ def calculer_cotisations(brut, pmss, atmp_rate, fnal_rate, prev_pat_contribution
     }
 
 
+# --- API Adresse & Calcul Km ---
+@st.cache_data(ttl=3600)
+def geocoder_adresse(adresse):
+    """Geocode une adresse via api-adresse.data.gouv.fr (gratuit, pas de cle API)"""
+    if not adresse or len(adresse.strip()) < 5:
+        return None
+    try:
+        resp = requests.get(
+            "https://api-adresse.data.gouv.fr/search/",
+            params={"q": adresse, "limit": 5},
+            timeout=5
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("features"):
+                results = []
+                for f in data["features"]:
+                    props = f["properties"]
+                    coords = f["geometry"]["coordinates"]  # [lon, lat]
+                    results.append({
+                        "label": props.get("label", ""),
+                        "lon": coords[0],
+                        "lat": coords[1],
+                        "score": props.get("score", 0),
+                    })
+                return results
+    except Exception:
+        pass
+    return None
+
+
+@st.cache_data(ttl=3600)
+def calculer_distance_osrm(lat1, lon1, lat2, lon2):
+    """Calcule la distance route via OSRM (gratuit, trajet le plus court)"""
+    try:
+        url = f"https://router.project-osrm.org/route/v1/driving/{lon1},{lat1};{lon2},{lat2}"
+        resp = requests.get(url, params={"overview": "false"}, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get("routes"):
+                distance_m = data["routes"][0]["distance"]
+                duree_s = data["routes"][0]["duration"]
+                return {
+                    "distance_km": round(distance_m / 1000, 1),
+                    "duree_min": round(duree_s / 60, 0),
+                }
+    except Exception:
+        pass
+    return None
+
+
 # --- Moteur de Calcul ---
 def calculate_salary(tjm, days_worked_month, days_worked_week,
                      ik_amount, igd_amount, other_expenses, use_reserve, use_mutuelle,
                      nb_titres_restaurant=0, frais_intermediation_pct=0.0,
-                     jours_teletravail=0, use_rgdu=False, effectif_sup_50=False):
+                     jours_teletravail=0, effectif_sup_50=False,
+                     frais_partages_pct=0.0, commission_apporteur=0.0,
+                     type_contrat="CDI", provision_cp=False):
 
     cfg_base = st.session_state.cfg_base_salary
     rate_gestion = st.session_state.cfg_frais_gestion / 100.0
@@ -259,7 +331,6 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     mutuelle_total_cost = 0.0
     mutuelle_part_pat = 0.0
     mutuelle_part_sal = 0.0
-
     if use_mutuelle:
         mutuelle_rate = st.session_state.cfg_mutuelle_taux / 100.0
         split_pat = st.session_state.cfg_mutuelle_part_pat / 100.0
@@ -275,12 +346,14 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     jours_teletravail_effectifs = min(jours_teletravail, TELETRAVAIL_MAX_JOURS)
     forfait_teletravail = jours_teletravail_effectifs * TELETRAVAIL_TAUX_JOUR
 
+    # CA et deductions
     turnover = tjm * days_worked_month
     management_fees = turnover * rate_gestion
     frais_intermediation = turnover * (frais_intermediation_pct / 100.0)
+    frais_partages = turnover * (frais_partages_pct / 100.0)
 
-    # Montant disponible (apres frais de gestion et intermediation)
-    montant_disponible = turnover - management_fees - frais_intermediation
+    # Montant disponible = CA - Gestion - Intermediation - Partages - Commission
+    montant_disponible = turnover - management_fees - frais_intermediation - frais_partages - commission_apporteur
 
     # Total des frais rembourses
     total_frais_rembourses = ik_amount + igd_amount + forfait_teletravail + other_expenses
@@ -288,75 +361,94 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     base_salary = cfg_base * (days_worked_week / 5.0)
     prime_apport = base_salary * rate_prime
 
-    # Reserve financiere
+    # Reserve financiere / Indemnite de precarite (CDD)
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
-    reserve_brute = cfg_base * (days_worked_week / 5.0) * rate_reserve
+    reserve_brute = base_salary * rate_reserve
 
-    # --- Taux de charges -> complement + brut (methode Silae) ---
-    # COMPLEMENT = ((MONTANT_DISPO / (1 + TAUX)) - BASE - PRIME - RESERVE) / (1 + taux_prime)
     budget_salaire = montant_disponible - total_frais_rembourses
     taux_charges_override = st.session_state.cfg_taux_charges_override / 100.0
+    reserve_reintegree = not use_reserve
 
     if taux_charges_override > 0:
         taux_charges = taux_charges_override
     else:
-        # Auto-calcul du taux (incluant charges marginales sur reserve)
         taux_charges = 0.55
         for _ in range(50):
             pool = budget_salaire / (1 + taux_charges)
             ct_est = max(0, pool - base_salary - prime_apport - reserve_brute)
-            brut_est = (base_salary + prime_apport + ct_est) * (1 + rate_cp)
-            ta = min(brut_est, pmss)
-            tb = max(0, brut_est - pmss)
-            pd_ = round(ta * 0.0159, 2)
-            ps_ = round(tb * 0.0073, 2) if tb > 0 else 0.0
-            pt_ = pd_ + mutuelle_part_pat + ps_
-            c_ = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, pt_)
-            fs_ = round(pt_ * 0.08, 2)
-            icp_ = brut_est - (base_salary + prime_apport + ct_est)
-            ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
-            # Charges marginales sur reserve: cotisations reelles sur brut+reserve vs brut seul
-            reserve_brut = reserve_brute * (1 + rate_cp)
-            brut_avec_reserve = brut_est + reserve_brut
-            ta2 = min(brut_avec_reserve, pmss)
-            tb2 = max(0, brut_avec_reserve - pmss)
-            pd2 = round(ta2 * 0.0159, 2)
-            ps2 = round(tb2 * 0.0073, 2) if tb2 > 0 else 0.0
-            pt2 = pd2 + mutuelle_part_pat + ps2
-            c2_ = calculer_cotisations(brut_avec_reserve, pmss, atmp_rate, fnal_rate, pt2)
-            fs2 = round(pt2 * 0.08, 2)
-            ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + reserve_brute * rate_cp + mutuelle_part_pat * (reserve_brute / pool)
-            tn = (ch_brut + ch_reserve) / pool if pool > 0 else 0
+
+            if reserve_reintegree:
+                # Reserve DANS le brut : ICP sur (base+prime+reserve+complement)
+                brut_components = base_salary + prime_apport + reserve_brute + ct_est
+                brut_est = brut_components * (1 + rate_cp)
+                ta = min(brut_est, pmss)
+                tb = max(0, brut_est - pmss)
+                pd_ = round(ta * 0.0159, 2)
+                ps_ = round(tb * 0.0073, 2) if tb > 0 else 0.0
+                pt_ = pd_ + mutuelle_part_pat + ps_
+                c_ = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, pt_)
+                fs_ = round(pt_ * 0.08, 2)
+                icp_ = brut_components * rate_cp
+                ch = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
+                tn = ch / pool if pool > 0 else 0
+            else:
+                # Reserve HORS brut : charges marginales sur reserve
+                brut_components = base_salary + prime_apport + ct_est
+                brut_est = brut_components * (1 + rate_cp)
+                ta = min(brut_est, pmss)
+                tb = max(0, brut_est - pmss)
+                pd_ = round(ta * 0.0159, 2)
+                ps_ = round(tb * 0.0073, 2) if tb > 0 else 0.0
+                pt_ = pd_ + mutuelle_part_pat + ps_
+                c_ = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, pt_)
+                fs_ = round(pt_ * 0.08, 2)
+                icp_ = brut_components * rate_cp
+                ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
+                reserve_brut_cp = reserve_brute * (1 + rate_cp)
+                brut_avec_reserve = brut_est + reserve_brut_cp
+                ta2 = min(brut_avec_reserve, pmss)
+                tb2 = max(0, brut_avec_reserve - pmss)
+                pd2 = round(ta2 * 0.0159, 2)
+                ps2 = round(tb2 * 0.0073, 2) if tb2 > 0 else 0.0
+                pt2 = pd2 + mutuelle_part_pat + ps2
+                c2_ = calculer_cotisations(brut_avec_reserve, pmss, atmp_rate, fnal_rate, pt2)
+                fs2 = round(pt2 * 0.08, 2)
+                ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + reserve_brute * rate_cp + mutuelle_part_pat * (reserve_brute / pool if pool > 0 else 0)
+                tn = (ch_brut + ch_reserve) / pool if pool > 0 else 0
+
             if abs(tn - taux_charges) < 0.00001:
                 taux_charges = tn
                 break
             taux_charges = tn
 
-    # Complement depuis le taux
+    # --- Resultats depuis le taux converge ---
     pool = budget_salaire / (1 + taux_charges)
     complement_total = max(0, pool - base_salary - prime_apport - reserve_brute)
     complement_remuneration = complement_total / (1 + rate_prime)
     complement_apport_affaires = complement_total - complement_remuneration
 
-    # Brut = base + prime + complement + ICP (sans provision)
-    indemnite_cp = (base_salary + prime_apport + complement_total) * rate_cp
-    gross_salary = base_salary + prime_apport + complement_total + indemnite_cp
+    if reserve_reintegree:
+        # Reserve dans le brut, ICP inclut la reserve
+        brut_base = base_salary + prime_apport + reserve_brute + complement_total
+        indemnite_cp = brut_base * rate_cp
+        gross_salary = brut_base + indemnite_cp
+    else:
+        # Reserve hors brut
+        brut_base = base_salary + prime_apport + complement_total
+        indemnite_cp = brut_base * rate_cp
+        gross_salary = brut_base + indemnite_cp
 
     # Cotisations reelles sur le brut
     tranche_a = min(gross_salary, pmss)
     tranche_b = max(0, gross_salary - pmss)
-
     prev_deces_pat = round(tranche_a * 0.0159, 2)
     prev_supp_pat = round(tranche_b * 0.0073, 2) if tranche_b > 0 else 0.0
     prev_pat_total = prev_deces_pat + mutuelle_part_pat + prev_supp_pat
-
     cotis = calculer_cotisations(gross_salary, pmss, atmp_rate, fnal_rate, prev_pat_total)
     forfait_social = round(prev_pat_total * 0.08, 2)
 
-    # RGDU
-    reduction_rgdu = 0.0
-    if use_rgdu:
-        reduction_rgdu = calculer_rgdu(gross_salary, smic, use_fnal_50=effectif_sup_50)
+    # RGDU (toujours appliquee)
+    reduction_rgdu = calculer_rgdu(gross_salary, smic, use_fnal_50=effectif_sup_50)
 
     # Charges patronales totales
     employer_charges_avant_rgdu = cotis["total_pat"] + mutuelle_part_pat + tr_part_pat + forfait_social
@@ -365,23 +457,54 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     # Charges salariales totales
     employee_charges = cotis["total_sal"] + mutuelle_part_sal + tr_part_sal
 
-    # Provision reserve financiere = MONTANT DISPO - (brut + charges pat)
-    # Inclut la reserve brute + les charges futures sur la reserve
-    provision_reserve_financiere = max(0, budget_salaire - gross_salary - employer_charges)
+    # Provision reserve / indemnite precarite
+    if reserve_reintegree:
+        provision_reserve_financiere = 0
+    else:
+        provision_reserve_financiere = max(0, budget_salaire - gross_salary - employer_charges)
 
-    # Cout global
-    cout_global_sans_reserve = gross_salary + employer_charges + total_frais_rembourses
+    reserve_amount = reserve_brute
 
-    reserve_amount = reserve_brute if use_reserve else 0
+    # Cout global = Brut + Charges Pat + Frais
+    cout_global = gross_salary + employer_charges + total_frais_rembourses
 
     # Net
     net_before_tax = gross_salary - employee_charges
     net_payable = net_before_tax + total_frais_rembourses
 
+    # --- Provision Conges Payes ---
+    provision_cp_amount = 0
+    brut_hors_cp = gross_salary
+    employee_charges_hors_cp = employee_charges
+    net_hors_cp = net_before_tax
+
+    if provision_cp and indemnite_cp > 0:
+        brut_hors_cp = gross_salary - indemnite_cp
+        ta_hcp = min(brut_hors_cp, pmss)
+        tb_hcp = max(0, brut_hors_cp - pmss)
+        pd_hcp = round(ta_hcp * 0.0159, 2)
+        ps_hcp = round(tb_hcp * 0.0073, 2) if tb_hcp > 0 else 0.0
+        pt_hcp = pd_hcp + mutuelle_part_pat + ps_hcp
+        cotis_hcp = calculer_cotisations(brut_hors_cp, pmss, atmp_rate, fnal_rate, pt_hcp)
+        fs_hcp = round(pt_hcp * 0.08, 2)
+        rgdu_hcp = calculer_rgdu(brut_hors_cp, smic, use_fnal_50=effectif_sup_50)
+        employer_charges_hcp = cotis_hcp["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_hcp - rgdu_hcp
+        employee_charges_hors_cp = cotis_hcp["total_sal"] + mutuelle_part_sal + tr_part_sal
+        cout_global_hcp = brut_hors_cp + employer_charges_hcp + total_frais_rembourses
+        provision_cp_amount = cout_global - cout_global_hcp
+        net_hors_cp = brut_hors_cp - employee_charges_hors_cp
+
+    # Label selon type de contrat
+    label_reserve = "Indemnite de precarite" if type_contrat == "CDD" else "Reserve financiere"
+
     return {
+        "tjm": tjm,
+        "days_worked_month": days_worked_month,
         "turnover": turnover,
         "management_fees": management_fees,
         "frais_intermediation": frais_intermediation,
+        "frais_partages": frais_partages,
+        "commission_apporteur": commission_apporteur,
         "montant_disponible": montant_disponible,
         "ik_amount": ik_amount,
         "igd_amount": igd_amount,
@@ -395,7 +518,9 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "complement_apport_affaires": complement_apport_affaires,
         "indemnite_cp": indemnite_cp,
         "gross_salary": gross_salary,
+        "reserve_brute": reserve_brute,
         "reserve_amount": reserve_amount,
+        "reserve_reintegree": reserve_reintegree,
         "employer_charges": employer_charges,
         "employer_charges_avant_rgdu": employer_charges_avant_rgdu,
         "cotis_total_pat": cotis["total_pat"],
@@ -413,7 +538,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "tr_part_sal": tr_part_sal,
         "tr_part_pat": tr_part_pat,
         "nb_titres_restaurant": nb_titres_restaurant,
-        "cout_global_sans_reserve": cout_global_sans_reserve,
+        "cout_global": cout_global,
         "net_before_tax": net_before_tax,
         "net_payable": net_payable,
         "effectif_sup_50": effectif_sup_50,
@@ -421,181 +546,264 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "pool_silae": pool,
         "provision_reserve_financiere": provision_reserve_financiere,
         "budget_salaire": budget_salaire,
+        "type_contrat": type_contrat,
+        "label_reserve": label_reserve,
+        "provision_cp": provision_cp,
+        "provision_cp_amount": provision_cp_amount,
+        "brut_hors_cp": brut_hors_cp,
+        "employee_charges_hors_cp": employee_charges_hors_cp,
+        "net_hors_cp": net_hors_cp,
     }
 
-# --- PDF Generation ---
-def create_pdf(data, name):
+# --- Chemin logo ---
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_signe_plus.png")
+
+
+def _generer_camembert_pdf(data):
+    """Genere le camembert en PNG pour insertion dans le PDF"""
+    frais_gestion_total = (data['management_fees'] + data['frais_intermediation']
+                           + data.get('frais_partages', 0) + data.get('commission_apporteur', 0))
+    cotis_sociales = (data['cotis_total_pat'] + data['cotis_total_sal']
+                      + data['forfait_social'] - data['reduction_rgdu']
+                      + data['mutuelle_part_pat'] + data['mutuelle_part_sal']
+                      + data['tr_part_pat'] + data['tr_part_sal'])
+    provision_viz = data['provision_reserve_financiere'] if not data.get('reserve_reintegree', False) else 0
+
+    labels = ['Net a payer', 'Frais de gestion', 'Cotisations Sociales\net Patronales', 'Provision Reserve']
+    values = [data['net_payable'], frais_gestion_total, cotis_sociales, provision_viz]
+    colors = ['#E91E63', '#757575', '#F48FB1', '#F8BBD0']
+
+    # Filtrer les valeurs nulles
+    filtered = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 0]
+    if not filtered:
+        return None
+    labels_f, values_f, colors_f = zip(*filtered)
+
+    fig, ax = plt.subplots(figsize=(3.2, 3.2))
+    wedges, texts, autotexts = ax.pie(
+        values_f, labels=labels_f, colors=colors_f,
+        autopct='%1.1f%%', textprops={'fontsize': 6.5}, pctdistance=0.78
+    )
+    for t in autotexts:
+        t.set_fontsize(6)
+        t.set_color('white')
+        t.set_weight('bold')
+    centre_circle = plt.Circle((0, 0), 0.40, fc='white')
+    ax.add_artist(centre_circle)
+    plt.tight_layout()
+
+    tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
+    plt.savefig(tmp.name, dpi=150, bbox_inches='tight', transparent=False, facecolor='white')
+    plt.close()
+    return tmp.name
+
+
+# --- Couleurs S+ ---
+ROSE_R, ROSE_G, ROSE_B = 233, 30, 99
+ROSE_CLAIR_R, ROSE_CLAIR_G, ROSE_CLAIR_B = 252, 228, 236
+GRIS_R, GRIS_G, GRIS_B = 245, 245, 245
+
+
+# --- Chemin police Unicode ---
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_BOLD_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_ITALIC_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"
+
+
+# --- PDF Generation (synthetique V4 avec logo + camembert + encadres roses) ---
+def create_pdf(data, name, membre_bu=""):
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
+    page_w = 190  # largeur utile
 
-    pdf.cell(200, 10, txt=f"Simulation de Salaire - {name}", ln=1, align="C")
-    pdf.ln(5)
+    # Police Unicode pour accents
+    pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
+    pdf.add_font("DejaVu", "B", FONT_BOLD_PATH, uni=True)
+    pdf.add_font("DejaVu", "I", FONT_ITALIC_PATH, uni=True)
 
-    # Parametres utilises
-    effectif_txt = "< 50 salaries" if not data.get('effectif_sup_50', False) else ">= 50 salaries"
-    fnal_txt = "0.10%" if not data.get('effectif_sup_50', False) else "0.50%"
-    pdf.set_font("Arial", 'I', size=9)
-    pdf.cell(200, 6, txt=f"Parametres: Effectif {effectif_txt} | FNAL {fnal_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}%", ln=1, align="C")
-    pdf.ln(5)
+    # === BANDEAU ROSE EN-TÊTE ===
+    pdf.set_fill_color(ROSE_R, ROSE_G, ROSE_B)
+    pdf.rect(0, 0, 210, 28, 'F')
 
+    # Logo sur fond rose
+    if os.path.exists(LOGO_PATH):
+        pdf.image(LOGO_PATH, x=8, y=4, w=45)
+
+    # Paramètres dans le bandeau (4 colonnes bien espacées)
+    pdf.set_text_color(255, 255, 255)
     t_gest = st.session_state.cfg_frais_gestion
-    t_ik = st.session_state.cfg_ik_rate
+    nb_tr = data.get('nb_titres_restaurant', 0)
+    v_tjm = data.get('tjm', 0)
+    v_jours = data.get('days_worked_month', 0)
+    col_w = 33
+    x_start = 62
 
-    # --- Activite & Frais ---
-    pdf.set_font("Arial", 'B', size=12)
-    pdf.cell(200, 10, txt="Activite & Frais", ln=1)
-    pdf.set_font("Arial", size=11)
-    pdf.cell(140, 8, txt="Chiffre d'affaires (CA)", border=0)
-    pdf.cell(50, 8, txt=f"{data['turnover']:,.2f} EUR", border=0, align='R', ln=1)
+    # Ligne 1 : Labels
+    pdf.set_font("DejaVu", 'B', size=7)
+    pdf.set_xy(x_start, 6)
+    pdf.cell(col_w, 4, txt="TJM", align='C')
+    pdf.cell(col_w, 4, txt="Nb de jours / mois", align='C')
+    pdf.cell(col_w, 4, txt="Frais de gestion", align='C')
+    pdf.cell(col_w, 4, txt="Tickets-Restaurants", align='C')
 
-    pdf.cell(140, 8, txt=f"Frais de gestion ({t_gest}%)", border=0)
-    pdf.cell(50, 8, txt=f"- {data['management_fees']:,.2f} EUR", border=0, align='R', ln=1)
+    # Ligne 2 : Valeurs (plus grosses, en gras)
+    pdf.set_font("DejaVu", 'B', size=11)
+    pdf.set_xy(x_start, 12)
+    pdf.cell(col_w, 6, txt=f"{v_tjm:.0f}€", align='C')
+    pdf.cell(col_w, 6, txt=f"{v_jours:g}j", align='C')
+    pdf.cell(col_w, 6, txt=f"{t_gest}%", align='C')
+    pdf.cell(col_w, 6, txt=f"{'Oui' if nb_tr > 0 else 'Non'}", align='C')
 
-    if data.get('frais_intermediation', 0) > 0:
-        pdf.cell(140, 8, txt="Frais d'intermediation", border=0)
-        pdf.cell(50, 8, txt=f"- {data['frais_intermediation']:,.2f} EUR", border=0, align='R', ln=1)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_y(32)
 
-    pdf.set_font("Arial", 'B', size=11)
-    pdf.cell(140, 8, txt="= MONTANT DISPONIBLE", border='T')
-    pdf.cell(50, 8, txt=f"{data['montant_disponible']:,.2f} EUR", border='T', align='R', ln=1)
+    # === TITRE ===
+    pdf.set_font("DejaVu", 'B', size=18)
+    pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
+    pdf.cell(page_w, 10, txt="SIMULATION", ln=1, align="C")
+    pdf.set_text_color(80, 80, 80)
+    pdf.set_font("DejaVu", "", size=10)
+    pdf.cell(page_w, 6, txt=name, ln=1, align="C")
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+
+    # === DEUX COLONNES : Salaire | Camembert ===
+    y_start = pdf.get_y()
+
+    # --- Colonne gauche : décomposition salaire ---
+    lines = [
+        ("Salaire de base", data['base_salary']),
+        ("Prime d'apport d'affaires", data['prime_apport']),
+    ]
+    if data.get('reserve_reintegree', False):
+        label_res = data.get('label_reserve', 'Réserve financière')
+        lines.append((label_res.capitalize(), data['reserve_brute']))
+    lines.extend([
+        ("Complément de rémunération", data['complement_remuneration']),
+        ("Complément apport d'affaires", data['complement_apport_affaires']),
+        ("Indemnité congés payés", data['indemnite_cp']),
+    ])
+
+    # Lignes alternées rose clair / blanc
+    pdf.set_font("DejaVu", "", size=9)
+    for i, (label, val) in enumerate(lines):
+        if i % 2 == 0:
+            pdf.set_fill_color(ROSE_CLAIR_R, ROSE_CLAIR_G, ROSE_CLAIR_B)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+        pdf.set_x(10)
+        pdf.cell(68, 6, txt=f"  {label}", border=0, fill=True)
+        pdf.cell(30, 6, txt=f"{val:,.2f} €", border=0, align='R', fill=True, ln=1)
+
+    # Ligne Salaire Brut (fond rose foncé)
+    pdf.set_fill_color(ROSE_R, ROSE_G, ROSE_B)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("DejaVu", 'B', size=9)
+    pdf.set_x(10)
+    pdf.cell(68, 7, txt="  Salaire Brut", border=0, fill=True)
+    pdf.cell(30, 7, txt=f"{data['gross_salary']:,.2f} €", border=0, align='R', fill=True, ln=1)
+    pdf.set_text_color(0, 0, 0)
+
+    # Charges
+    pdf.ln(2)
+    pdf.set_font("DejaVu", "", size=9)
+    for i, (label, val) in enumerate([("Charges Salariales", data['employee_charges']),
+                                       ("Charges Patronales", data['employer_charges'])]):
+        if i % 2 == 0:
+            pdf.set_fill_color(GRIS_R, GRIS_G, GRIS_B)
+        else:
+            pdf.set_fill_color(255, 255, 255)
+        pdf.set_x(10)
+        pdf.cell(68, 6, txt=f"  {label}", border=0, fill=True)
+        pdf.cell(30, 6, txt=f"{val:,.2f} €", border=0, align='R', fill=True, ln=1)
+
+    # --- Colonne droite : camembert ---
+    chart_path = _generer_camembert_pdf(data)
+    if chart_path:
+        pdf.image(chart_path, x=115, y=y_start, w=85)
+        try:
+            os.unlink(chart_path)
+        except Exception:
+            pass
+
+    # === SECTION FRAIS (fond gris clair) ===
+    pdf.ln(4)
+    if data.get('total_frais_rembourses', 0) > 0:
+        pdf.set_fill_color(GRIS_R, GRIS_G, GRIS_B)
+        pdf.set_font("DejaVu", 'B', size=10)
+        pdf.cell(page_w, 7, txt="  VOS FRAIS", border=0, fill=True, ln=1)
+        pdf.set_font("DejaVu", "", size=9)
+        frais_items = []
+        if data.get('ik_amount', 0) > 0:
+            frais_items.append(("Indemnités Kilométriques", data['ik_amount']))
+        if data.get('igd_amount', 0) > 0:
+            frais_items.append(("Indemnités Grands Déplacements", data['igd_amount']))
+        if data.get('forfait_teletravail', 0) > 0:
+            frais_items.append((f"Forfait Télétravail ({data['jours_teletravail']}j x 2.70)", data['forfait_teletravail']))
+        if data.get('other_expenses', 0) > 0:
+            frais_items.append(("Autres Frais", data['other_expenses']))
+        for i, (label, val) in enumerate(frais_items):
+            bg = (255, 255, 255) if i % 2 == 0 else (GRIS_R, GRIS_G, GRIS_B)
+            pdf.set_fill_color(*bg)
+            pdf.cell(140, 6, txt=f"    {label}", border=0, fill=True)
+            pdf.cell(50, 6, txt=f"{val:,.2f} €", border=0, align='R', fill=True, ln=1)
+        pdf.ln(3)
+
+    # === ENCADRÉ ROSE : BRUT AVEC RÉSERVE ===
+    if data.get('reserve_reintegree', False):
+        pdf.set_fill_color(ROSE_CLAIR_R, ROSE_CLAIR_G, ROSE_CLAIR_B)
+        pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
+        pdf.set_font("DejaVu", 'B', size=12)
+        pdf.cell(130, 10, txt="  BRUT AVEC RÉSERVE FINANCIÈRE*", border=0, fill=True)
+        pdf.cell(60, 10, txt=f"{data['gross_salary']:,.2f} €", border=0, align='R', fill=True, ln=1)
+        pdf.set_text_color(0, 0, 0)
+        pdf.ln(2)
+
+    # === ENCADRÉ ROSE FORT : NET À PAYER ===
+    pdf.set_fill_color(ROSE_R, ROSE_G, ROSE_B)
+    pdf.set_text_color(255, 255, 255)
+    pdf.set_font("DejaVu", 'B', size=14)
+    pdf.cell(130, 12, txt="  NET À PAYER AVANT IMPÔTS", border=0, fill=True)
+    pdf.cell(60, 12, txt=f"{data['net_payable']:,.2f} €", border=0, align='R', fill=True, ln=1)
+    pdf.set_text_color(0, 0, 0)
     pdf.ln(5)
 
-    # --- Decomposition Brut ---
-    pdf.set_font("Arial", 'B', size=12)
-    pdf.cell(200, 10, txt="Decomposition du Salaire Brut", ln=1)
-    pdf.set_font("Arial", size=11)
+    # === Note réserve ===
+    if data.get('reserve_brute', 0) > 0:
+        label_res = data.get('label_reserve', 'Réserve financière')
+        if not data.get('reserve_reintegree', False):
+            pdf.set_font("DejaVu", 'B', size=8)
+            pdf.cell(200, 5, txt=f"*La {label_res} de {data['reserve_brute']:,.2f} € brut sera provisionnée tous les mois.", ln=1)
+        pdf.set_font("DejaVu", 'I', size=7)
+        pdf.set_text_color(100, 100, 100)
+        pdf.multi_cell(190, 3.5, txt=f"{label_res.capitalize()} : équivalente à 10% du salaire de base mensuel, ce montant « mis en réserve » chaque mois est une obligation légale conventionnelle prévue pour vous permettre lors de vos intermissions de faire face à vos éventuels frais de prospection voire à financer votre indemnité de rupture conventionnelle. Cette réserve vous appartient et vous est reversée en fin de contrat de travail (solde de tout compte).")
+        pdf.set_text_color(0, 0, 0)
 
-    pdf.cell(140, 8, txt="Salaire de Base", border=0)
-    pdf.cell(50, 8, txt=f"{data['base_salary']:,.2f} EUR", border=0, align='R', ln=1)
-    pdf.cell(140, 8, txt="Prime d'apport d'affaires", border=0)
-    pdf.cell(50, 8, txt=f"{data['prime_apport']:,.2f} EUR", border=0, align='R', ln=1)
-    pdf.cell(140, 8, txt="Complement de remuneration", border=0)
-    pdf.cell(50, 8, txt=f"{data['complement_remuneration']:,.2f} EUR", border=0, align='R', ln=1)
-    pdf.cell(140, 8, txt="Complement Apport d'Affaires", border=0)
-    pdf.cell(50, 8, txt=f"{data['complement_apport_affaires']:,.2f} EUR", border=0, align='R', ln=1)
-    pdf.cell(140, 8, txt="Indemnite Conges Payes", border=0)
-    pdf.cell(50, 8, txt=f"{data['indemnite_cp']:,.2f} EUR", border=0, align='R', ln=1)
+    # === Mutuelle ===
+    if data.get('mutuelle_part_pat', 0) > 0:
+        pdf.ln(2)
+        pdf.set_font("DejaVu", 'I', size=8)
+        pdf.set_text_color(100, 100, 100)
+        pdf.cell(200, 5, txt="Mutuelle d'entreprise incluse, prise en charge à 50 % dans la simulation présentée.", ln=1)
+        pdf.set_text_color(0, 0, 0)
 
-    pdf.set_font("Arial", 'B', size=11)
-    pdf.cell(140, 8, txt="= TOTAL BRUT", border='T')
-    pdf.cell(50, 8, txt=f"{data['gross_salary']:,.2f} EUR", border='T', align='R', ln=1)
-    pdf.ln(5)
-
-    # --- Charges Patronales (detail cotisations) ---
-    pdf.set_font("Arial", 'B', size=12)
-    pdf.cell(200, 10, txt="Charges Patronales (detail)", ln=1)
-
-    # En-tete du tableau
-    pdf.set_font("Arial", 'B', size=8)
-    pdf.cell(70, 6, txt="Cotisation", border='B')
-    pdf.cell(30, 6, txt="Base", border='B', align='R')
-    pdf.cell(20, 6, txt="Taux", border='B', align='R')
-    pdf.cell(30, 6, txt="Montant", border='B', align='R', ln=1)
-
-    pdf.set_font("Arial", size=8)
-    for d in data['cotis_details']:
-        if d['montant_pat'] > 0:
-            label = COTISATIONS_LABELS.get(d['nom'], d['nom'])
-            pdf.cell(70, 5, txt=label, border=0)
-            pdf.cell(30, 5, txt=f"{d['base']:,.2f}", border=0, align='R')
-            pdf.cell(20, 5, txt=f"{d['taux_pat']*100:.2f}%", border=0, align='R')
-            pdf.cell(30, 5, txt=f"{d['montant_pat']:,.2f}", border=0, align='R', ln=1)
-
-    pdf.set_font("Arial", size=9)
-    pdf.cell(120, 6, txt="+ Mutuelle Part Patronale", border=0)
-    pdf.cell(30, 6, txt=f"{data['mutuelle_part_pat']:,.2f}", border=0, align='R', ln=1)
-
-    if data.get('tr_part_pat', 0) > 0:
-        pdf.cell(120, 6, txt="+ Titres Restaurant Part Patronale", border=0)
-        pdf.cell(30, 6, txt=f"{data['tr_part_pat']:,.2f}", border=0, align='R', ln=1)
-
-    pdf.cell(120, 6, txt="+ Forfait Social Prevoyance (8%)", border=0)
-    pdf.cell(30, 6, txt=f"{data['forfait_social']:,.2f}", border=0, align='R', ln=1)
-
-    if data.get('reduction_rgdu', 0) > 0:
-        pdf.cell(120, 6, txt="- Reduction RGDU 2026", border=0)
-        pdf.cell(30, 6, txt=f"-{data['reduction_rgdu']:,.2f}", border=0, align='R', ln=1)
-
-    pdf.set_font("Arial", 'B', size=10)
-    pdf.cell(120, 8, txt="= TOTAL CHARGES PATRONALES", border='T')
-    pdf.cell(30, 8, txt=f"{data['employer_charges']:,.2f} EUR", border='T', align='R', ln=1)
+    # === Signature ===
+    pdf.ln(8)
+    pdf.set_font("DejaVu", 'I', size=10)
+    pdf.cell(200, 6, txt="Bien cordialement,", ln=1)
     pdf.ln(3)
+    if membre_bu:
+        pdf.set_font("DejaVu", 'B', size=10)
+        pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
+        pdf.cell(200, 6, txt=membre_bu, ln=1)
+        pdf.set_text_color(0, 0, 0)
 
-    # --- Provision Reserve Financiere ---
-    pdf.set_font("Arial", size=11)
-    if data.get('reserve_amount', 0) > 0 and data.get('provision_reserve_financiere', 0) > 0:
-        pdf.cell(140, 8, txt="Provision Reserve Financiere", border=0)
-        pdf.cell(50, 8, txt=f"{data['provision_reserve_financiere']:,.2f} EUR", border=0, align='R', ln=1)
+    # === Logo en bas de page ===
+    if os.path.exists(LOGO_PATH):
+        pdf.image(LOGO_PATH, x=80, y=275, w=40)
 
-    pdf.set_font("Arial", 'B', size=11)
-    pdf.cell(140, 8, txt="= COUT GLOBAL SANS RESERVE", border='T')
-    pdf.cell(50, 8, txt=f"{data['cout_global_sans_reserve']:,.2f} EUR", border='T', align='R', ln=1)
-    pdf.ln(3)
-
-    # --- Charges Salariales (detail) ---
-    pdf.set_font("Arial", 'B', size=12)
-    pdf.cell(200, 10, txt="Charges Salariales (detail)", ln=1)
-
-    pdf.set_font("Arial", 'B', size=8)
-    pdf.cell(70, 6, txt="Cotisation", border='B')
-    pdf.cell(30, 6, txt="Base", border='B', align='R')
-    pdf.cell(20, 6, txt="Taux", border='B', align='R')
-    pdf.cell(30, 6, txt="Montant", border='B', align='R', ln=1)
-
-    pdf.set_font("Arial", size=8)
-    for d in data['cotis_details']:
-        if d['montant_sal'] > 0:
-            label = COTISATIONS_LABELS.get(d['nom'], d['nom'])
-            pdf.cell(70, 5, txt=label, border=0)
-            pdf.cell(30, 5, txt=f"{d['base']:,.2f}", border=0, align='R')
-            pdf.cell(20, 5, txt=f"{d['taux_sal']*100:.2f}%", border=0, align='R')
-            pdf.cell(30, 5, txt=f"{d['montant_sal']:,.2f}", border=0, align='R', ln=1)
-
-    pdf.set_font("Arial", size=9)
-    pdf.cell(120, 6, txt="+ Mutuelle Part Salariale", border=0)
-    pdf.cell(30, 6, txt=f"{data['mutuelle_part_sal']:,.2f}", border=0, align='R', ln=1)
-
-    if data.get('tr_part_sal', 0) > 0:
-        pdf.cell(120, 6, txt="+ Titres Restaurant Part Salariale", border=0)
-        pdf.cell(30, 6, txt=f"{data['tr_part_sal']:,.2f}", border=0, align='R', ln=1)
-
-    pdf.set_font("Arial", 'B', size=10)
-    pdf.cell(120, 8, txt="= TOTAL CHARGES SALARIALES", border='T')
-    pdf.cell(30, 8, txt=f"{data['employee_charges']:,.2f} EUR", border='T', align='R', ln=1)
-    pdf.ln(3)
-
-    # --- Net ---
-    pdf.set_font("Arial", 'B', size=11)
-    pdf.cell(140, 8, txt="= NET AVANT IMPOT", border='T')
-    pdf.cell(50, 8, txt=f"{data['net_before_tax']:,.2f} EUR", border='T', align='R', ln=1)
-    pdf.ln(5)
-
-    # --- Frais rembourses ---
-    pdf.set_font("Arial", size=11)
-    if data.get('ik_amount', 0) > 0:
-        pdf.cell(140, 8, txt=f"Indemnites Kilometriques ({t_ik} EUR/km)", border=0)
-        pdf.cell(50, 8, txt=f"+ {data['ik_amount']:,.2f} EUR", border=0, align='R', ln=1)
-
-    if data.get('igd_amount', 0) > 0:
-        pdf.cell(140, 8, txt="Indemnites Grand Deplacement", border=0)
-        pdf.cell(50, 8, txt=f"+ {data['igd_amount']:,.2f} EUR", border=0, align='R', ln=1)
-
-    if data.get('forfait_teletravail', 0) > 0:
-        pdf.cell(140, 8, txt=f"Forfait Teletravail ({data['jours_teletravail']}j x 2.70)", border=0)
-        pdf.cell(50, 8, txt=f"+ {data['forfait_teletravail']:,.2f} EUR", border=0, align='R', ln=1)
-
-    if data.get('other_expenses', 0) > 0:
-        pdf.cell(140, 8, txt="Autres Frais", border=0)
-        pdf.cell(50, 8, txt=f"+ {data['other_expenses']:,.2f} EUR", border=0, align='R', ln=1)
-
-    pdf.ln(10)
-
-    pdf.set_font("Arial", 'B', size=14)
-    pdf.cell(140, 10, txt="= NET A PAYER", border='TB')
-    pdf.cell(50, 10, txt=f"{data['net_payable']:,.2f} EUR", border='TB', align='R', ln=1)
-
-    return pdf.output(dest='S').encode('latin-1')
+    out = pdf.output(dest='S')
+    return out.encode('latin-1', 'replace') if isinstance(out, str) else out
 
 # --- UI Streamlit ---
 
@@ -606,74 +814,157 @@ with st.sidebar:
     st.title("Consultant")
     consultant_name = st.text_input("Nom", "Consultant")
     tjm = st.number_input("TJM (EUR)", min_value=0, value=500, step=10)
+    frais_intermediation_pct = st.number_input("Frais d'intermediation (%)", value=0.0, step=0.5, min_value=0.0)
 
     st.markdown("---")
     st.subheader("Temps de Travail")
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        days_worked_month = st.number_input("Jours / Mois", value=19.0, step=0.5)
-    with col_d2:
-        days_worked_week = st.number_input("Jours / Sem", value=5.0, max_value=7.0, step=0.5)
+    type_contrat = st.radio("Type de contrat", ["CDI", "CDD"], horizontal=True)
+    temps_travail = st.radio("Temps de travail", ["Complet", "Partiel"], horizontal=True)
 
-    st.markdown("---")
-    st.subheader("Intermediation")
-    frais_intermediation_pct = st.number_input("Frais d'intermediation (%)", value=0.0, step=0.5, min_value=0.0)
+    col_j1, col_j2 = st.columns(2)
+    with col_j1:
+        nb_journees = st.number_input("Nb Journees", value=19, step=1, min_value=0)
+    with col_j2:
+        nb_demi_journees = st.number_input("Nb Demi-journees", value=0, step=1, min_value=0)
+    days_worked_month = nb_journees + nb_demi_journees * 0.5
+    st.caption(f"Jours produits : **{days_worked_month}**")
+
+    if temps_travail == "Partiel":
+        days_worked_week = st.number_input("Jours / Sem", value=2.5, max_value=5.0, step=0.5)
+    else:
+        days_worked_week = st.number_input("Jours / Sem", value=5.0, max_value=7.0, step=0.5)
 
     st.markdown("---")
     st.subheader("Indemnites Kilometriques (IK)")
 
-    type_vehicule = st.selectbox("Type de vehicule", ["Voiture", "Moto"])
+    type_vehicule = st.selectbox("Type de vehicule", ["Voiture Thermique", "Voiture Electrique", "Moto"])
 
-    if type_vehicule == "Voiture":
+    is_electrique = (type_vehicule == "Voiture Electrique")
+
+    if type_vehicule in ("Voiture Thermique", "Voiture Electrique"):
         cv_options = [3, 4, 5, 6, 7]
         cv_fiscaux = st.selectbox("Chevaux fiscaux (CV)", cv_options, index=2)
         tranche_km = st.selectbox("Tranche kilometrique annuelle",
                                   ["Jusqu'a 5 000 km", "De 5 001 a 20 000 km", "Au-dela de 20 000 km"])
-
         if tranche_km == "Jusqu'a 5 000 km":
-            ik_rate_display = BAREME_IK_VOITURE_2026[cv_fiscaux]["jusqua_5000"]
+            ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["jusqua_5000"]
         elif tranche_km == "De 5 001 a 20 000 km":
-            ik_rate_display = BAREME_IK_VOITURE_2026[cv_fiscaux]["de_5001_a_20000"]
+            ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["de_5001_a_20000"]
         else:
-            ik_rate_display = BAREME_IK_VOITURE_2026[cv_fiscaux]["au_dela_20000"]
+            ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["au_dela_20000"]
     else:
         cv_options_moto = [1, 2, 3, 4, 5]
         cv_fiscaux = st.selectbox("Chevaux fiscaux (CV)", cv_options_moto, index=2)
         tranche_km = st.selectbox("Tranche kilometrique annuelle",
                                   ["Jusqu'a 3 000 km", "De 3 001 a 6 000 km", "Au-dela de 6 000 km"])
-
         if tranche_km == "Jusqu'a 3 000 km":
-            ik_rate_display = BAREME_IK_MOTO_2026[cv_fiscaux]["jusqua_3000"]
+            ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["jusqua_3000"]
         elif tranche_km == "De 3 001 a 6 000 km":
-            ik_rate_display = BAREME_IK_MOTO_2026[cv_fiscaux]["de_3001_a_6000"]
+            ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["de_3001_a_6000"]
         else:
-            ik_rate_display = BAREME_IK_MOTO_2026[cv_fiscaux]["au_dela_6000"]
+            ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["au_dela_6000"]
 
+    # Majoration 20% vehicule electrique
+    ik_rate_display = ik_rate_base
+    if is_electrique:
+        st.info(f"Bareme standard : {ik_rate_base:.3f} EUR/km | **Majoration electrique +20%**")
+    else:
+        st.info(f"Taux IK : **{ik_rate_display:.3f} EUR/km**")
     st.session_state.cfg_ik_rate = ik_rate_display
-    st.info(f"Taux IK applique : **{ik_rate_display:.3f} EUR/km**")
 
-    km_mensuel = st.number_input("Nb Kilometres ce mois", value=0.0, step=10.0)
-    ik_total = km_mensuel * ik_rate_display
-    st.caption(f"Total IK : {ik_total:,.2f} EUR")
+    # --- Calcul km via adresse ---
+    with st.expander("Calculer les km par adresse", expanded=False):
+        adresse_domicile = st.text_input("Adresse domicile", "", key="ik_domicile",
+                                          placeholder="Ex: 12 rue de la Paix, 75002 Paris")
+        adresse_mission = st.text_input("Adresse lieu de mission", "", key="ik_mission",
+                                         placeholder="Ex: La Defense, 92400 Courbevoie")
+
+        if st.button("Calculer le trajet", key="btn_calc_km"):
+            if adresse_domicile and adresse_mission:
+                with st.spinner("Recherche des adresses..."):
+                    geo_dom = geocoder_adresse(adresse_domicile)
+                    geo_mis = geocoder_adresse(adresse_mission)
+
+                if geo_dom and geo_mis:
+                    dom = geo_dom[0]
+                    mis = geo_mis[0]
+                    st.caption(f"Domicile : {dom['label']}")
+                    st.caption(f"Mission : {mis['label']}")
+
+                    with st.spinner("Calcul de l'itineraire..."):
+                        route = calculer_distance_osrm(dom['lat'], dom['lon'], mis['lat'], mis['lon'])
+
+                    if route:
+                        km_aller = route['distance_km']
+                        km_ar = round(km_aller * 2, 1)
+                        st.success(f"**Trajet : {km_aller} km** (aller) | **{km_ar} km AR** | ~{route['duree_min']:.0f} min")
+                        st.session_state['ik_km_calcule'] = km_ar
+                    else:
+                        st.error("Impossible de calculer l'itineraire. Verifiez les adresses.")
+                else:
+                    if not geo_dom:
+                        st.error("Adresse domicile non trouvee")
+                    if not geo_mis:
+                        st.error("Adresse mission non trouvee")
+            else:
+                st.warning("Saisissez les deux adresses")
+
+        if 'ik_km_calcule' in st.session_state and st.session_state['ik_km_calcule'] > 0:
+            st.info(f"Km AR calcule : **{st.session_state['ik_km_calcule']} km**")
+
+    # Km mensuel (manuel ou pre-rempli par le calcul)
+    default_km = st.session_state.get('ik_km_calcule', 0.0) * days_worked_month if 'ik_km_calcule' in st.session_state else 0.0
+    km_mensuel = st.number_input("Nb Kilometres ce mois", value=0.0, step=10.0,
+                                  help=f"Km AR/jour x jours = km mensuels" if default_km > 0 else "")
+    if default_km > 0 and km_mensuel == 0:
+        st.caption(f"Suggestion : {st.session_state['ik_km_calcule']} km/jour x {days_worked_month} jours = **{default_km:.0f} km**")
+
+    if is_electrique:
+        ik_total = km_mensuel * ik_rate_base * 1.20
+        st.caption(f"Total IK : {km_mensuel:.0f} x {ik_rate_base:.3f} x 1.20 = **{ik_total:,.2f} EUR**")
+    else:
+        ik_total = km_mensuel * ik_rate_display
+        st.caption(f"Total IK : **{ik_total:,.2f} EUR**")
 
     st.markdown("---")
     st.subheader("Indemnites Grand Deplacement (IGD)")
 
+    duree_mission = st.selectbox("Duree de la mission",
+                                 ["Moins de 3 mois", "De 3 a 24 mois", "Au-dela de 24 mois"])
+    if duree_mission == "Moins de 3 mois":
+        igd_bareme = IGD_BAREME_2026["moins_3_mois"]
+    elif duree_mission == "De 3 a 24 mois":
+        igd_bareme = IGD_BAREME_2026["3_a_24_mois"]
+    else:
+        igd_bareme = IGD_BAREME_2026["24_a_72_mois"]
+
+    zone_igd = st.selectbox("Zone IGD", ["Province", "Paris/IDF"])
     nb_repas_igd = st.number_input("Nb repas IGD", value=0, step=1, min_value=0)
     nb_nuitees_igd = st.number_input("Nb nuitees IGD", value=0, step=1, min_value=0)
-    zone_igd = st.selectbox("Zone IGD", ["Province", "Paris/IDF"])
 
-    igd_nuitee_rate = IGD_NUITEE_PARIS if zone_igd == "Paris/IDF" else IGD_NUITEE_PROVINCE
-    igd_total = (nb_repas_igd * IGD_REPAS) + (nb_nuitees_igd * igd_nuitee_rate)
+    igd_repas_rate = igd_bareme["repas"]
+    igd_nuitee_rate = igd_bareme["nuitee_paris"] if zone_igd == "Paris/IDF" else igd_bareme["nuitee_province"]
+    igd_total = (nb_repas_igd * igd_repas_rate) + (nb_nuitees_igd * igd_nuitee_rate)
 
     if nb_repas_igd > 0 or nb_nuitees_igd > 0:
-        st.caption(f"Repas: {nb_repas_igd} x {IGD_REPAS:.2f} EUR = {nb_repas_igd * IGD_REPAS:.2f} EUR")
-        st.caption(f"Nuitees: {nb_nuitees_igd} x {igd_nuitee_rate:.2f} EUR = {nb_nuitees_igd * igd_nuitee_rate:.2f} EUR")
+        st.caption(f"Repas: {nb_repas_igd} x {igd_repas_rate:.2f} = {nb_repas_igd * igd_repas_rate:.2f} EUR")
+        st.caption(f"Nuitees: {nb_nuitees_igd} x {igd_nuitee_rate:.2f} = {nb_nuitees_igd * igd_nuitee_rate:.2f} EUR")
         st.caption(f"**Total IGD : {igd_total:,.2f} EUR**")
 
     st.markdown("---")
+    st.subheader("Invitation Dejeuner")
+    nb_invitation_dejeuner = st.number_input("Nb invitations dejeuner", value=0, step=1, min_value=0,
+                                              help="Repas pris en charge (pas de TR ce jour)")
+
+    st.markdown("---")
     st.subheader("Titres Restaurant")
-    nb_titres_restaurant = st.number_input("Nb Titres Restaurant", value=0, step=1, min_value=0)
+    mode_tr = st.radio("Mode TR", ["Automatique", "Manuel"], horizontal=True)
+    if mode_tr == "Automatique":
+        nb_tr_auto = max(0, int(days_worked_month - nb_repas_igd - nb_invitation_dejeuner - nb_demi_journees))
+        st.info(f"TR auto = {days_worked_month:.0f}j - {nb_repas_igd} IGD - {nb_invitation_dejeuner} invit. - {nb_demi_journees} demi-j = **{nb_tr_auto}**")
+        nb_titres_restaurant = nb_tr_auto
+    else:
+        nb_titres_restaurant = st.number_input("Nb Titres Restaurant", value=0, step=1, min_value=0)
     if nb_titres_restaurant > 0:
         st.caption(f"Part salariale : {nb_titres_restaurant} x {TR_PART_PATRONALE_MAX:.2f} = {nb_titres_restaurant * TR_PART_PATRONALE_MAX:.2f} EUR")
         st.caption(f"Part patronale : {nb_titres_restaurant} x {TR_PART_PATRONALE_MAX:.2f} = {nb_titres_restaurant * TR_PART_PATRONALE_MAX:.2f} EUR")
@@ -687,50 +978,96 @@ with st.sidebar:
 
     st.markdown("---")
     st.subheader("Autres Frais")
-    frais_internet = st.number_input("Internet / Telephone (EUR)", value=0.0, step=10.0)
-    frais_transport = st.number_input("Transports (Navigo...) (EUR)", value=0.0, step=10.0)
-    frais_divers = st.number_input("Autres Frais (EUR)", value=0.0, step=10.0)
+    montant_facture_tel = st.number_input("Facture Tel/Internet (EUR)", value=0.0, step=10.0,
+                                           help=f"Prise en charge a {st.session_state.cfg_pct_tel_internet:.0f}% (config)")
+    frais_internet = round(montant_facture_tel * (st.session_state.cfg_pct_tel_internet / 100.0), 2)
+    if montant_facture_tel > 0:
+        st.caption(f"Pris en charge : {st.session_state.cfg_pct_tel_internet:.0f}% de {montant_facture_tel:.2f} = **{frais_internet:.2f} EUR**")
 
+    montant_abonnement_transport = st.number_input("Abonnement Transport (EUR)", value=0.0, step=10.0,
+                                                     help=f"Prise en charge a {st.session_state.cfg_pct_transport:.0f}% (config)")
+    frais_transport = round(montant_abonnement_transport * (st.session_state.cfg_pct_transport / 100.0), 2)
+    if montant_abonnement_transport > 0:
+        st.caption(f"Pris en charge : {st.session_state.cfg_pct_transport:.0f}% de {montant_abonnement_transport:.2f} = **{frais_transport:.2f} EUR**")
+
+    frais_divers = st.number_input("Autres Frais (EUR)", value=0.0, step=10.0)
     expenses_other = frais_internet + frais_transport + frais_divers
-    st.caption(f"Total Autres Frais : {expenses_other:,.2f} EUR")
+    st.caption(f"Total Autres Frais : **{expenses_other:,.2f} EUR**")
+
+    st.markdown("---")
+    st.subheader("Frais Partages & Commission")
+    frais_partages_pct = st.number_input("Frais partages (%)", value=0.0, step=0.5, min_value=0.0,
+                                          help="Frais de gestion partages avec le client")
+    commission_mode = st.radio("Commission apporteur", ["Aucune", "Pourcentage", "Montant fixe"], horizontal=True)
+    _ca_preview = tjm * days_worked_month
+    if commission_mode == "Pourcentage":
+        commission_pct = st.number_input("Commission (%)", value=0.0, step=0.5, min_value=0.0)
+        commission_apporteur = round(_ca_preview * commission_pct / 100.0, 2)
+        if commission_pct > 0:
+            st.caption(f"Commission : {commission_pct}% de {_ca_preview:,.0f} = **{commission_apporteur:,.2f} EUR**")
+    elif commission_mode == "Montant fixe":
+        commission_apporteur = st.number_input("Commission (EUR)", value=0.0, step=50.0, min_value=0.0)
+    else:
+        commission_apporteur = 0.0
 
     st.markdown("---")
     st.subheader("Options")
 
-    reserve_reintegree = st.checkbox("Reserve Financiere reintegree", value=False,
-                                     help="Cochez pour reintegrer la reserve (positif). Decochez pour provisionner (negatif).")
+    label_reserve_opt = "Indemnite de precarite reintegree" if type_contrat == "CDD" else "Reserve Financiere reintegree"
+    reserve_reintegree = st.checkbox(label_reserve_opt, value=False,
+                                     help="Cochez pour reintegrer dans le brut. Decochez pour provisionner.")
     use_reserve = not reserve_reintegree
 
+    provision_cp = st.checkbox("Provisions Conges Payes", value=False,
+                                help="Si coche, les ICP sont retirees du brut et provisionnees.")
     use_mutuelle = st.checkbox("Mutuelle Sante", value=True)
-
-    # RGDU appliquee automatiquement (obligatoire)
-    use_rgdu = True
-
-    # Effectif entreprise (impacte FNAL et RGDU)
     effectif_sup_50 = st.checkbox("Entreprise >= 50 salaries", value=False,
                                    help="FNAL 0.50% si >= 50 sal. / 0.10% si < 50 sal.")
+
+    st.markdown("---")
+    st.subheader("Commercial")
+    membre_bu = st.selectbox("Membre BU", MEMBRES_BU)
 
 # --- CALCUL AVANT AFFICHAGE ---
 results = calculate_salary(tjm, days_worked_month, days_worked_week,
                            ik_total, igd_total, expenses_other, use_reserve, use_mutuelle,
-                           nb_titres_restaurant, frais_intermediation_pct, jours_teletravail, use_rgdu, effectif_sup_50)
+                           nb_titres_restaurant, frais_intermediation_pct, jours_teletravail,
+                           effectif_sup_50, frais_partages_pct, commission_apporteur,
+                           type_contrat, provision_cp)
 
 # Main : Onglets
 tab_simu, tab_config, tab_comm = st.tabs(["Resultats Simulation", "Configuration Globale", "Email & Explications"])
 
 with tab_simu:
     st.title("Simulateur de Portage Salarial 2026")
-    # KPIs
+
+    # --- KPIs principaux ---
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
     with kpi1:
         st.metric("Chiffre d'Affaires", f"{results['turnover']:,.2f} EUR")
     with kpi2:
         st.metric("Salaire Brut", f"{results['gross_salary']:,.2f} EUR")
     with kpi3:
-        total_charges = results['employer_charges'] + results['employee_charges']
-        st.metric("Charges Totales", f"{total_charges:,.2f} EUR")
+        st.metric("Cout Global", f"{results['cout_global']:,.2f} EUR")
     with kpi4:
-        st.metric("NET A PAYER", f"{results['net_payable']:,.2f} EUR", delta="Virement")
+        st.metric("Net a payer avant impot", f"{results['net_payable']:,.2f} EUR")
+
+    # --- Sous-metriques ---
+    sm1, sm2, sm3, sm4, sm5 = st.columns(5)
+    with sm1:
+        st.caption(f"Montant Disponible : **{results['montant_disponible']:,.2f}**")
+    with sm2:
+        st.caption(f"Charges Patronales : **{results['employer_charges']:,.2f}**")
+    with sm3:
+        st.caption(f"Charges Salariales : **{results['employee_charges']:,.2f}**")
+    with sm4:
+        if results['provision_reserve_financiere'] > 0:
+            st.caption(f"Prov. {results['label_reserve']} : **{results['provision_reserve_financiere']:,.2f}**")
+        else:
+            st.caption(f"{results['label_reserve']} (dans brut) : **{results['reserve_brute']:,.2f}**")
+    with sm5:
+        if results['nb_titres_restaurant'] > 0:
+            st.caption(f"Titres Restaurant : **{results['nb_titres_restaurant']}**")
 
     st.divider()
 
@@ -739,78 +1076,57 @@ with tab_simu:
     with col_main:
         st.subheader("Detail du Bulletin")
 
-        txt_gest = f"Frais de gestion ({st.session_state.cfg_frais_gestion}%)"
-        effectif_txt = "< 50 sal." if not results.get('effectif_sup_50', False) else ">= 50 sal."
+        # --- Construction du bulletin restructure (V4) ---
+        data_lines = []
 
-        # Construction dynamique des lignes
-        data_lines = [
-            ("Chiffre d'affaires (CA)", results['turnover'], "Positif"),
-            (txt_gest, -results['management_fees'], "Negatif"),
-        ]
+        # Decomposition du brut
+        data_lines.append(("Salaire de base", results['base_salary'], "Detail"))
+        data_lines.append(("Prime d'apport d'affaires", results['prime_apport'], "Detail"))
 
-        if results['frais_intermediation'] > 0:
-            data_lines.append((f"Frais d'intermediation ({frais_intermediation_pct}%)", -results['frais_intermediation'], "Negatif"))
+        # Reserve dans le brut si reintegree
+        if results['reserve_reintegree']:
+            data_lines.append((results['label_reserve'].capitalize(), results['reserve_brute'], "Detail"))
 
-        data_lines.append(("= MONTANT DISPONIBLE", results['montant_disponible'], "Total"))
+        data_lines.append(("Complement de remuneration", results['complement_remuneration'], "Detail"))
+        data_lines.append(("Complement d'apport d'affaires", results['complement_apport_affaires'], "Detail"))
+
+        if results['provision_cp']:
+            data_lines.append(("Indemnite conges payes (provisionnee)", results['indemnite_cp'], "Detail"))
+        else:
+            data_lines.append(("Indemnite conges payes", results['indemnite_cp'], "Detail"))
+
+        data_lines.append(("SALAIRE BRUT", results['gross_salary'], "Total"))
         data_lines.append(("", 0, "Empty"))
 
-        data_lines.extend([
-            ("Salaire de Base", results['base_salary'], "Detail"),
-            ("Prime d'apport d'affaires", results['prime_apport'], "Detail"),
-            ("Complement de remuneration", results['complement_remuneration'], "Detail"),
-            ("Complement Apport d'Affaires", results['complement_apport_affaires'], "Detail"),
-            ("Indemnite Conges Payes", results['indemnite_cp'], "Detail"),
-            ("= TOTAL BRUT", results['gross_salary'], "Total"),
-            ("", 0, "Empty"),
-        ])
-
-        # Provision reserve financiere (Silae: MONTANT DISPO - brut - charges pat)
-        if use_reserve and results.get('provision_reserve_financiere', 0) > 0:
-            data_lines.append(("Provision Reserve Financiere", -results['provision_reserve_financiere'], "Negatif"))
-
-        data_lines.append(("Mutuelle Part Patronale", results['mutuelle_part_pat'], "Detail"))
-
-        if results['tr_part_pat'] > 0:
-            data_lines.append(("Titres Restaurant Part Patronale", results['tr_part_pat'], "Detail"))
-
-        # Charges patronales
-        data_lines.append((f"Cotisations Patronales [{effectif_txt}]", results['cotis_total_pat'], "Detail"))
-        data_lines.append(("Forfait Social Prevoyance (8%)", results['forfait_social'], "Detail"))
-
-        if results.get('reduction_rgdu', 0) > 0:
-            data_lines.append(("- Reduction RGDU 2026", -results['reduction_rgdu'], "Positif"))
-
-        data_lines.append(("= Total Charges Patronales", results['employer_charges'], "Total"))
+        # Charges (totaux uniquement)
+        data_lines.append(("Charges Salariales", -results['employee_charges'], "Negatif"))
+        data_lines.append(("Charges Patronales", results['employer_charges'], "Detail"))
         data_lines.append(("", 0, "Empty"))
 
-        # Frais rembourses (detail)
-        data_lines.append(("--- Frais Rembourses ---", 0, "Empty"))
-        if results['ik_amount'] > 0:
-            data_lines.append((f"Indemnites Km ({st.session_state.cfg_ik_rate:.3f} EUR/km)", results['ik_amount'], "Detail"))
-        if results['igd_amount'] > 0:
-            data_lines.append(("Indemnites Grand Deplacement (IGD)", results['igd_amount'], "Detail"))
-        if results.get('forfait_teletravail', 0) > 0:
-            data_lines.append((f"Forfait Teletravail ({results['jours_teletravail']}j x 2.70)", results['forfait_teletravail'], "Detail"))
-        if results['other_expenses'] > 0:
-            data_lines.append(("Autres Frais", results['other_expenses'], "Detail"))
-        data_lines.append(("= Total Frais Rembourses", results['total_frais_rembourses'], "Total"))
-        data_lines.append(("", 0, "Empty"))
+        # Frais
+        has_frais = results['total_frais_rembourses'] > 0
+        if has_frais:
+            if results['ik_amount'] > 0:
+                data_lines.append(("Indemnites Kilometriques", results['ik_amount'], "Detail"))
+            if results['igd_amount'] > 0:
+                data_lines.append(("Indemnites Grands Deplacements", results['igd_amount'], "Detail"))
+            if results.get('forfait_teletravail', 0) > 0:
+                data_lines.append((f"Forfait Teletravail ({results['jours_teletravail']}j x 2.70)", results['forfait_teletravail'], "Detail"))
+            if results['other_expenses'] > 0:
+                data_lines.append(("Autres Frais", results['other_expenses'], "Detail"))
+            data_lines.append(("", 0, "Empty"))
 
-        data_lines.append(("= COUT GLOBAL SANS RESERVE", results['cout_global_sans_reserve'], "Total"))
-        data_lines.append(("", 0, "Empty"))
+        # Provision CP si activee
+        if results['provision_cp'] and results['provision_cp_amount'] > 0:
+            data_lines.append(("Provision Conges Payes", results['provision_cp_amount'], "Detail"))
 
-        # Charges salariales
-        data_lines.append(("Cotisations Salariales", -results['cotis_total_sal'], "Negatif"))
-        data_lines.append(("Mutuelle Part Salariale", -results['mutuelle_part_sal'], "Negatif"))
-        if results['tr_part_sal'] > 0:
-            data_lines.append(("Titres Restaurant Part Salariale", -results['tr_part_sal'], "Negatif"))
-        data_lines.append(("= Total Charges Salariales", -results['employee_charges'], "Total"))
-        data_lines.append(("", 0, "Empty"))
+        # Provision reserve si provisionnee
+        if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
+            label_prov = f"Provision {results['label_reserve']}"
+            data_lines.append((label_prov, results['provision_reserve_financiere'], "Detail"))
 
-        # NET AVANT IMPOT = BRUT - CHARGES SAL
-        data_lines.append(("= NET AVANT IMPOT", results['net_before_tax'], "Total"))
         data_lines.append(("", 0, "Empty"))
-        data_lines.append(("= NET A PAYER (Net + Frais)", results['net_payable'], "Final"))
+        data_lines.append(("Net a payer avant impot", results['net_payable'], "Final"))
 
         df_disp = pd.DataFrame(data_lines, columns=["Libelle", "Montant", "Type"])
 
@@ -819,7 +1135,7 @@ with tab_simu:
             .style.format({"Montant": "{:,.2f} EUR"}),
             use_container_width=True,
             hide_index=True,
-            height=600
+            height=500
         )
 
         # --- Expander : Detail Cotisations Patronales ---
@@ -895,53 +1211,66 @@ with tab_simu:
 = {results['net_before_tax']:,.2f} EUR
 ```
 
-**NET A PAYER**
+**NET A PAYER AVANT IMPOT**
 ```
 = NET AVANT IMPOT + FRAIS REMBOURSES
 = {results['net_before_tax']:,.2f} + {results['total_frais_rembourses']:,.2f}
 = {results['net_payable']:,.2f} EUR
 ```
 
-**COUT GLOBAL SANS RESERVE**
+**COUT GLOBAL**
 ```
 = BRUT + CHARGES PATRONALES + TOTAL FRAIS
 = {results['gross_salary']:,.2f} + {results['employer_charges']:,.2f} + {results['total_frais_rembourses']:,.2f}
-= {results['cout_global_sans_reserve']:,.2f} EUR
+= {results['cout_global']:,.2f} EUR
 ```
-
-**PROVISION RESERVE FINANCIERE**
+            """)
+            if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
+                charges_futures = results['provision_reserve_financiere'] - results['reserve_amount']
+                st.markdown(f"""
+**PROVISION {results['label_reserve'].upper()}**
 ```
 = MONTANT DISPO - (BRUT + CHARGES PAT)
 = {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
 = {results['provision_reserve_financiere']:,.2f} EUR
 ```
-*(dont reserve brute {results['reserve_amount']:,.2f} EUR + charges futures {results['provision_reserve_financiere'] - results['reserve_amount']:,.2f} EUR)*
-            """)
+*(dont {results['label_reserve']} brute {results['reserve_amount']:,.2f} EUR + charges futures {charges_futures:,.2f} EUR)*
+                """)
 
     with col_viz:
         st.subheader("Repartition")
-        charges_cotis = (results['cotis_total_pat'] + results['cotis_total_sal']
-                         + results['forfait_social'] - results['reduction_rgdu'])
-        charges_mutuelle_tr = (results['mutuelle_part_pat'] + results['mutuelle_part_sal']
-                               + results['tr_part_pat'] + results['tr_part_sal'])
-        provision_viz = results.get('provision_reserve_financiere', 0) if use_reserve else 0
-        labels = ['Net Avant Impot', 'Cotisations Sociales', 'Mutuelle & TR', 'Frais Gestion', 'Provision Reserve']
-        values = [results['net_before_tax'],
-                  charges_cotis,
-                  charges_mutuelle_tr,
-                  results['management_fees'] + results['frais_intermediation'],
-                  provision_viz]
 
-        fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4)])
-        fig.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+        # Taux reel CA -> Net
+        taux_ca_net = (results['net_payable'] / results['turnover'] * 100) if results['turnover'] > 0 else 0
+        st.info(f"**Taux CA → Net : {taux_ca_net:.1f}%**")
+
+        # Calcul des parts pour le camembert
+        frais_gestion_total = results['management_fees'] + results['frais_intermediation'] + results.get('frais_partages', 0) + results.get('commission_apporteur', 0)
+        cotis_sociales = (results['cotis_total_pat'] + results['cotis_total_sal']
+                          + results['forfait_social'] - results['reduction_rgdu']
+                          + results['mutuelle_part_pat'] + results['mutuelle_part_sal']
+                          + results['tr_part_pat'] + results['tr_part_sal'])
+        provision_viz = results['provision_reserve_financiere'] if not results['reserve_reintegree'] else 0
+
+        labels = ['Net a payer', 'Frais de gestion', 'Cotisations Sociales & Patronales', 'Provision Reserve']
+        values = [results['net_payable'], frais_gestion_total, cotis_sociales, provision_viz]
+        colors = ['#E91E63', '#757575', '#F48FB1', '#F8BBD0']
+
+        fig = go.Figure(data=[go.Pie(
+            labels=labels, values=values, hole=.4,
+            marker=dict(colors=colors),
+            textinfo='label+percent',
+            textposition='outside'
+        )])
+        fig.update_layout(margin=dict(t=10, b=10, l=10, r=10), showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("### Export")
-        pdf_bytes = create_pdf(results, consultant_name)
+        pdf_bytes = create_pdf(results, consultant_name, membre_bu)
         b64 = base64.b64encode(pdf_bytes).decode()
         href = (
             f'<a href="data:application/octet-stream;base64,{b64}" download="simulation_{consultant_name}.pdf" style="text-decoration:none;">'
-            f'<button style="width:100%; padding: 10px; background-color: #FF4B4B; color: white; border: none; border-radius: 5px; cursor: pointer;">'
+            f'<button style="width:100%; padding: 10px; background-color: #E91E63; color: white; border: none; border-radius: 5px; cursor: pointer;">'
             f'Telecharger le PDF</button></a>'
         )
         st.markdown(href, unsafe_allow_html=True)
@@ -1015,14 +1344,28 @@ with tab_config:
             value=st.session_state.cfg_frais_gestion, step=0.5
         )
 
+        st.divider()
+        st.subheader("% Prise en charge")
+        st.session_state.cfg_pct_tel_internet = st.number_input(
+            "% Abonnement Tel/Internet",
+            value=st.session_state.cfg_pct_tel_internet, step=5.0, min_value=0.0, max_value=100.0,
+            help="Pourcentage de la facture pris en charge"
+        )
+        st.session_state.cfg_pct_transport = st.number_input(
+            "% Abonnement Transport",
+            value=st.session_state.cfg_pct_transport, step=5.0, min_value=0.0, max_value=100.0,
+            help="Pourcentage de l'abonnement pris en charge"
+        )
+
+        st.divider()
         st.markdown("**Taux IK** (defini automatiquement selon bareme URSSAF)")
         st.caption(f"Taux actuel : {st.session_state.cfg_ik_rate:.3f} EUR/km")
 
         st.divider()
         st.markdown("#### Baremes IGD URSSAF 2026")
-        st.caption(f"Repas : {IGD_REPAS:.2f} EUR")
-        st.caption(f"Nuitee Province : {IGD_NUITEE_PROVINCE:.2f} EUR")
-        st.caption(f"Nuitee Paris/IDF : {IGD_NUITEE_PARIS:.2f} EUR")
+        for duree, vals in IGD_BAREME_2026.items():
+            label = duree.replace("_", " ").capitalize()
+            st.caption(f"**{label}** : Repas {vals['repas']:.2f} | Province {vals['nuitee_province']:.2f} | Paris {vals['nuitee_paris']:.2f}")
 
         st.divider()
         st.markdown("#### Titres Restaurant")
@@ -1077,8 +1420,8 @@ with tab_comm:
 = **Salaire Brut Total : {results['gross_salary']:,.2f} EUR**
 
 *Tranches : A = {results['tranche_a']:,.2f} EUR (PMSS) | B = {results['tranche_b']:,.2f} EUR*"""
-        if use_reserve and results.get('provision_reserve_financiere', 0) > 0:
-            txt_brut += f"\n\n*Provision Reserve Financiere : {results['provision_reserve_financiere']:,.2f} EUR (reserve + charges futures, hors brut)*"
+        if not results['reserve_reintegree'] and results.get('provision_reserve_financiere', 0) > 0:
+            txt_brut += f"\n\n*Provision {results['label_reserve']} : {results['provision_reserve_financiere']:,.2f} EUR (reserve + charges futures, hors brut)*"
         st.markdown(txt_brut)
 
         # Section 4 - Charges patronales (ligne par ligne)
@@ -1146,24 +1489,26 @@ with tab_comm:
         st.markdown(txt_frais)
 
         # Section 6 - Cout global
-        st.markdown("### 6. Le Cout Global Sans Reserve")
+        st.markdown("### 6. Le Cout Global")
         st.markdown(f"""
-**COUT GLOBAL SANS RESERVE = BRUT + CHARGES PATRONALES + TOTAL FRAIS**
+**COUT GLOBAL = BRUT + CHARGES PATRONALES + TOTAL FRAIS**
 
-= {results['gross_salary']:,.2f} + {results['employer_charges']:,.2f} + {results['total_frais_rembourses']:,.2f} = **{results['cout_global_sans_reserve']:,.2f} EUR**
+= {results['gross_salary']:,.2f} + {results['employer_charges']:,.2f} + {results['total_frais_rembourses']:,.2f} = **{results['cout_global']:,.2f} EUR**
         """)
 
         # Section 7 - Reserve
-        if use_reserve and results.get('provision_reserve_financiere', 0) > 0:
-            st.markdown("### 7. La Provision Reserve Financiere")
+        if not results['reserve_reintegree'] and results.get('provision_reserve_financiere', 0) > 0:
+            label_res = results['label_reserve']
+            charges_futures = results['provision_reserve_financiere'] - results['reserve_amount']
+            st.markdown(f"### 7. La Provision {label_res.capitalize()}")
             st.markdown(f"""
-**PROVISION RESERVE FINANCIERE = MONTANT DISPO - (BRUT + CHARGES PAT)**
+**PROVISION {label_res.upper()} = MONTANT DISPO - (BRUT + CHARGES PAT)**
 
 = {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
 = **{results['provision_reserve_financiere']:,.2f} EUR**
 
-*Dont reserve brute : {results['reserve_amount']:,.2f} EUR (base x {st.session_state.cfg_taux_reserve}%)*
-*Dont charges futures sur reserve : {results['provision_reserve_financiere'] - results['reserve_amount']:,.2f} EUR*
+*Dont {label_res} brute : {results['reserve_amount']:,.2f} EUR (base x {st.session_state.cfg_taux_reserve}%)*
+*Dont charges futures sur {label_res} : {charges_futures:,.2f} EUR*
 
 *Cet argent reste a vous ! Il sert a financer vos periodes d'intercontrat ou est verse en fin de contrat.*
             """)
@@ -1218,83 +1563,83 @@ with tab_comm:
         st.header("Email type pour le consultant")
         st.markdown("Copiez ce texte pour accompagner l'envoi du PDF (Donnees 2026).")
 
-        # Frais rembourses
-        txt_frais = ""
+        # Texte temps de travail
+        txt_temps = "Mission temps plein" if days_worked_week >= 5 else f"Mission temps partiel ({days_worked_week}j/sem)"
+
+        # Frais de gestion + partages
+        txt_gestion = f"Nos frais de gestion de {st.session_state.cfg_frais_gestion}%"
+        if frais_partages_pct > 0:
+            txt_gestion += f" + frais partages de {frais_partages_pct}%"
+
+        # CP
+        txt_cp = "Versement de l'indemnite conges payes tous les mois"
+        if provision_cp:
+            txt_cp = "Provisionnement de l'indemnite conges payes"
+
+        # TR
+        txt_tr_mail = ""
+        if results['nb_titres_restaurant'] > 0:
+            txt_tr_mail = f"\n- Avec les Tickets restaurants ({results['nb_titres_restaurant']} titres)"
+
+        # Frais
+        txt_frais_mail = ""
         if results['total_frais_rembourses'] > 0:
-            txt_frais = f"\n*   Le remboursement de vos frais professionnels pour **{results['total_frais_rembourses']:,.2f} EUR** (non imposables)."
-
-            # Detail des frais
-            details_frais = []
+            details = []
             if results['ik_amount'] > 0:
-                details_frais.append(f"IK ({st.session_state.cfg_ik_rate:.3f} EUR/km) : {results['ik_amount']:,.2f} EUR")
+                details.append(f"IK : {results['ik_amount']:,.2f} EUR")
             if results['igd_amount'] > 0:
-                details_frais.append(f"IGD : {results['igd_amount']:,.2f} EUR")
+                details.append(f"IGD : {results['igd_amount']:,.2f} EUR")
             if results.get('forfait_teletravail', 0) > 0:
-                details_frais.append(f"Teletravail ({results['jours_teletravail']}j) : {results['forfait_teletravail']:,.2f} EUR")
+                details.append(f"Teletravail : {results['forfait_teletravail']:,.2f} EUR")
             if results['other_expenses'] > 0:
-                details_frais.append(f"Autres frais : {results['other_expenses']:,.2f} EUR")
-
-            if details_frais:
-                txt_frais += "\n    (" + ", ".join(details_frais) + ")"
-
-        # Frais intermediation
-        txt_intermediation = ""
-        if results['frais_intermediation'] > 0:
-            txt_intermediation = f"\nNote : Des frais d'intermediation de {results['frais_intermediation']:,.2f} EUR ({frais_intermediation_pct}%) ont ete deduits du CA."
-
-        # Mutuelle
-        txt_mutuelle = ""
-        if use_mutuelle:
-            txt_mutuelle = "\n- Sante : Mutuelle d'entreprise incluse (prise en charge a 50%)."
+                details.append(f"Autres : {results['other_expenses']:,.2f} EUR")
+            txt_frais_mail = f"\n- J'ai integre {results['total_frais_rembourses']:,.2f} EUR de frais mensuels ({', '.join(details)})"
 
         # Reserve
         txt_reserve_mail = ""
-        if use_reserve and results['reserve_amount'] > 0:
-            txt_reserve_mail = f"\n- Epargne : Une reserve financiere de **{results['reserve_amount']:,.2f} EUR** est constituee ce mois-ci (disponible en fin de contrat)."
+        label_res = results['label_reserve']
+        if not results['reserve_reintegree'] and results['reserve_brute'] > 0:
+            txt_reserve_mail = f"\n\nA noter que la {label_res}* de {results['reserve_brute']:,.2f} EUR brut, sera provisionnee tous les mois.\n\n(*) {label_res.capitalize()} : equivalente a 10% du salaire de base mensuel, ce montant mis en reserve chaque mois est une obligation legale conventionnelle prevue pour vous permettre lors de vos intermissions de faire face a vos eventuels frais de prospection voire a financer votre indemnite de rupture conventionnelle. Dans tous les cas, cette reserve vous appartient : son solde vous est communiquee par Compte d'Activite etabli par nos soins, et vous est reverse en fin de contrat de travail (solde de tout compte)."
 
-        # Titres restaurant
-        txt_tr = ""
-        if results['nb_titres_restaurant'] > 0:
-            txt_tr = f"\n- Titres Restaurant : {results['nb_titres_restaurant']} titres (part patronale {results['tr_part_pat']:,.2f} EUR)."
+        # Mutuelle
+        txt_mutuelle_mail = ""
+        if use_mutuelle:
+            txt_mutuelle_mail = "\nVous trouverez egalement en piece jointe le dossier relatif a la mutuelle proposee, prise en charge a 50% dans la simulation presentee."
 
-        # RGDU
-        txt_rgdu = ""
-        if results.get('reduction_rgdu', 0) > 0:
-            txt_rgdu = f"\n- RGDU 2026 : Reduction des charges patronales de {results['reduction_rgdu']:,.2f} EUR (allegement automatique)."
-
-        email_content = f"""Objet : Votre simulation de revenus - TJM {tjm} EUR
+        email_content = f"""Objet : Votre simulation de revenus avec Signe+ portage salarial
 
 Bonjour {consultant_name},
 
-Suite a nos echanges, j'ai le plaisir de vous transmettre votre simulation de salaire personnalisee, basee sur un TJM de {tjm} EUR et {days_worked_month} jours d'activite.
-{txt_intermediation}
-Voici la synthese de votre projection pour ce mois :
+Je vous remercie pour la qualite de nos echanges et pour le temps que vous m'avez accorde.
 
-VOTRE NET A PAYER ESTIME : {results['net_payable']:,.2f} EUR
-(Montant vire sur votre compte bancaire)
+Comme convenu, vous trouverez ci-dessous la simulation de revenus etablie sur la base des elements que nous avons valides ensemble :
 
-Ce montant comprend :
-*   Votre Salaire Net (apres deduction de toutes les charges sociales).{txt_frais}
+- {txt_temps}, soit une moyenne de {days_worked_month} jours produits/factures/mois
+- Votre TJM de {tjm} EUR HT
+- {txt_gestion}
+- {txt_cp}{txt_tr_mail}{txt_frais_mail}
 
-Les points cles de cette simulation :{txt_mutuelle}{txt_reserve_mail}{txt_tr}{txt_rgdu}
-- Securite : Cotisations completes (Chomage, Retraite Cadre, Securite Sociale).
-- Transparence : Tout est detaille dans le PDF ci-joint (Baremes 2026).
+Votre salaire net avant impot s'eleve a : {results['net_payable']:,.2f} EUR
 
 Detail du calcul :
-- Salaire de Base : {results['base_salary']:,.2f} EUR
+- Salaire de base : {results['base_salary']:,.2f} EUR
 - Prime d'apport d'affaires : {results['prime_apport']:,.2f} EUR
 - Complement de remuneration : {results['complement_remuneration']:,.2f} EUR
-- Complement Apport d'Affaires : {results['complement_apport_affaires']:,.2f} EUR
-- Indemnite Conges Payes : {results['indemnite_cp']:,.2f} EUR
-= Salaire Brut Total : {results['gross_salary']:,.2f} EUR
-- Charges Salariales : {results['employee_charges']:,.2f} EUR
-- Charges Patronales : {results['employer_charges']:,.2f} EUR
-- Net Avant Impot : {results['net_before_tax']:,.2f} EUR
+- Complement apport d'affaires : {results['complement_apport_affaires']:,.2f} EUR
+- Indemnite conges payes : {results['indemnite_cp']:,.2f} EUR
+= Salaire brut total : {results['gross_salary']:,.2f} EUR
 
-Je reste a votre disposition pour affiner ces chiffres ou pour preparer votre contrat.
+- Charges salariales : {results['employee_charges']:,.2f} EUR
+- Charges patronales : {results['employer_charges']:,.2f} EUR
+= Net avant impot : {results['net_before_tax']:,.2f} EUR
+{txt_reserve_mail}{txt_mutuelle_mail}
+
+Je reste naturellement a votre disposition pour affiner certains parametres ou repondre a toute question complementaire.
+
+Au plaisir de poursuivre nos echanges,
 
 Bien cordialement,
 
-L'equipe Portage"""
+{membre_bu}"""
 
-        st.text_area("Sujet & Corps du message", email_content, height=550)
+        st.text_area("Sujet & Corps du message", email_content, height=600)

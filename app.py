@@ -361,9 +361,14 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     base_salary = cfg_base * (days_worked_week / 5.0)
     prime_apport = base_salary * rate_prime
 
-    # Reserve financiere / Indemnite de precarite (CDD)
+    # Reserve financiere (CDI) / Indemnite de precarite (CDD)
     rate_reserve = st.session_state.cfg_taux_reserve / 100.0
-    reserve_brute = base_salary * rate_reserve
+    if type_contrat == "CDD":
+        # CDD : Indemnite precarite = (Base + Prime) x 10%
+        reserve_brute = (base_salary + prime_apport) * rate_reserve
+    else:
+        # CDI : Reserve financiere = Base x 10%
+        reserve_brute = base_salary * rate_reserve
 
     budget_salaire = montant_disponible - total_frais_rembourses
     taux_charges_override = st.session_state.cfg_taux_charges_override / 100.0
@@ -378,9 +383,16 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
             ct_est = max(0, pool - base_salary - prime_apport - reserve_brute)
 
             if reserve_reintegree:
-                # Reserve DANS le brut : ICP sur (base+prime+reserve+complement)
+                # Reserve/precarite DANS le brut
                 brut_components = base_salary + prime_apport + reserve_brute + ct_est
-                brut_est = brut_components * (1 + rate_cp)
+                if type_contrat == "CDD":
+                    # CDD : ICP = (base + prime + precarite) x 10% seulement
+                    icp_ = (base_salary + prime_apport + reserve_brute) * rate_cp
+                    brut_est = brut_components + icp_
+                else:
+                    # CDI : ICP = (base + prime + reserve + complement) x 10%
+                    icp_ = brut_components * rate_cp
+                    brut_est = brut_components + icp_
                 ta = min(brut_est, pmss)
                 tb = max(0, brut_est - pmss)
                 pd_ = round(ta * 0.0159, 2)
@@ -388,7 +400,6 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 pt_ = pd_ + mutuelle_part_pat + ps_
                 c_ = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, pt_)
                 fs_ = round(pt_ * 0.08, 2)
-                icp_ = brut_components * rate_cp
                 ch = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
                 tn = ch / pool if pool > 0 else 0
             else:
@@ -428,12 +439,18 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     complement_apport_affaires = complement_total - complement_remuneration
 
     if reserve_reintegree:
-        # Reserve dans le brut, ICP inclut la reserve
-        brut_base = base_salary + prime_apport + reserve_brute + complement_total
-        indemnite_cp = brut_base * rate_cp
-        gross_salary = brut_base + indemnite_cp
+        if type_contrat == "CDD":
+            # CDD reintegree : ICP = (base + prime + precarite) x 10%
+            indemnite_cp = (base_salary + prime_apport + reserve_brute) * rate_cp
+            brut_base = base_salary + prime_apport + reserve_brute + complement_total
+            gross_salary = brut_base + indemnite_cp
+        else:
+            # CDI reintegree : ICP = (base + prime + reserve + complement) x 10%
+            brut_base = base_salary + prime_apport + reserve_brute + complement_total
+            indemnite_cp = brut_base * rate_cp
+            gross_salary = brut_base + indemnite_cp
     else:
-        # Reserve hors brut
+        # Reserve/precarite hors brut (provisionnee)
         brut_base = base_salary + prime_apport + complement_total
         indemnite_cp = brut_base * rate_cp
         gross_salary = brut_base + indemnite_cp

@@ -560,7 +560,7 @@ LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_signe
 
 
 def _generer_camembert_pdf(data):
-    """Genere le camembert en PNG pour insertion dans le PDF (avec titre et legende)"""
+    """Génère le camembert style modèle Signe+ : bleu/rose avec légende horizontale."""
     frais_gestion_total = (data['management_fees'] + data['frais_intermediation']
                            + data.get('frais_partages', 0) + data.get('commission_apporteur', 0))
     cotis_sociales = (data['cotis_total_pat'] + data['cotis_total_sal']
@@ -569,44 +569,50 @@ def _generer_camembert_pdf(data):
                       + data['tr_part_pat'] + data['tr_part_sal'])
     provision_viz = data['provision_reserve_financiere'] if not data.get('reserve_reintegree', False) else 0
 
-    labels = ['Net a payer', 'Frais de gestion', 'Cotisations Sociales\net Patronales', 'Provision Reserve']
+    labels = ['Net à payer', 'Frais de gestion', 'Cotisations Sociales\net Patronales', 'Provision Réserve']
     values = [data['net_payable'], frais_gestion_total, cotis_sociales, provision_viz]
-    colors = ['#4A90D9', '#757575', '#E91E63', '#F8BBD0']
+    colors = ['#4A90D9', '#A0A0A0', '#E91E63', '#F48FB1']
 
-    # Filtrer les valeurs nulles
     filtered = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 0]
     if not filtered:
         return None
     labels_f, values_f, colors_f = zip(*filtered)
 
-    fig, ax = plt.subplots(figsize=(3.5, 4.2))
-    ax.set_title("Ventilation chiffre d'affaires", fontsize=9, fontweight='bold', pad=12, color='#333333')
+    fig = plt.figure(figsize=(3.4, 4.0))
+    gs = fig.add_gridspec(2, 1, height_ratios=[5, 1], hspace=0.05)
+
+    ax = fig.add_subplot(gs[0])
+    ax.set_title("Ventilation chiffre d'affaires", fontsize=8.5, fontweight='bold',
+                 pad=8, color='#333333', fontfamily='sans-serif')
+
     wedges, texts, autotexts = ax.pie(
-        values_f, colors=colors_f,
-        autopct='%1.1f%%', textprops={'fontsize': 7}, pctdistance=0.78,
-        startangle=90
+        values_f, colors=colors_f, autopct='%1.1f%%',
+        textprops={'fontsize': 7.5, 'fontweight': 'bold'}, pctdistance=0.75,
+        startangle=90, wedgeprops={'linewidth': 0.5, 'edgecolor': 'white'}
     )
     for t in texts:
-        t.set_fontsize(0)
+        t.set_text('')
     for t in autotexts:
-        t.set_fontsize(6.5)
         t.set_color('white')
-        t.set_weight('bold')
-    centre_circle = plt.Circle((0, 0), 0.40, fc='white')
-    ax.add_artist(centre_circle)
+        t.set_fontsize(7)
+    ax.add_artist(plt.Circle((0, 0), 0.38, fc='white'))
 
-    # Legende en dessous du camembert
-    legend = ax.legend(wedges, labels_f, loc='upper center', bbox_to_anchor=(0.5, -0.02),
-                       ncol=2, fontsize=6.5, frameon=False,
-                       handlelength=1.2, handletextpad=0.4, columnspacing=1.0)
-    for handle in legend.legend_handles:
-        handle.set_width(8)
-        handle.set_height(8)
+    # Légende horizontale en bas (style modèle)
+    ax_leg = fig.add_subplot(gs[1])
+    ax_leg.axis('off')
+    from matplotlib.patches import FancyBboxPatch
+    legend_items = list(zip(labels_f, colors_f))
+    n = len(legend_items)
+    for i, (lbl, col) in enumerate(legend_items):
+        x = 0.02 + (i / n) * 0.96
+        ax_leg.add_patch(plt.Rectangle((x, 0.55), 0.025, 0.35, fc=col, transform=ax_leg.transAxes))
+        ax_leg.text(x + 0.035, 0.72, lbl.replace('\n', ' '), transform=ax_leg.transAxes,
+                    fontsize=5.5, va='center', color='#444444', fontfamily='sans-serif')
 
-    plt.tight_layout()
+    plt.subplots_adjust(left=0.02, right=0.98, top=0.92, bottom=0.02)
 
     tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-    plt.savefig(tmp.name, dpi=170, bbox_inches='tight', transparent=True, facecolor='white')
+    plt.savefig(tmp.name, dpi=180, bbox_inches='tight', facecolor='white', edgecolor='none')
     plt.close()
     return tmp.name
 
@@ -619,271 +625,250 @@ GRIS_R, GRIS_G, GRIS_B = 245, 245, 245
 CHARCOAL_R, CHARCOAL_G, CHARCOAL_B = 50, 50, 50
 
 
-# --- Chemin police Unicode (bundlees dans le projet) ---
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# --- Chemin police Unicode (bundlées dans le projet) ---
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
 FONT_PATH = os.path.join(_BASE_DIR, "fonts", "DejaVuSans.ttf")
 FONT_BOLD_PATH = os.path.join(_BASE_DIR, "fonts", "DejaVuSans-Bold.ttf")
 FONT_ITALIC_PATH = os.path.join(_BASE_DIR, "fonts", "DejaVuSans-Oblique.ttf")
+# Fallback système si les polices bundlées n'existent pas
+if not os.path.exists(FONT_PATH):
+    FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    FONT_BOLD_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+    FONT_ITALIC_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"
 
 
-def _dotted_line(label, value_str, total_chars=62):
-    """Helper : construit une ligne avec pointilles entre label et valeur."""
-    space = total_chars - len(label) - len(value_str)
-    if space < 2:
-        space = 2
-    return f"{label} {'.' * space} {value_str}"
+def _dotted_line(pdf, x, y, w, h, label, value_str, font_name="D", font_size=8.5,
+                 label_color=(60, 60, 60), value_color=(60, 60, 60), bold_value=False):
+    """Dessine une ligne avec pointillés entre le label et la valeur (style modèle)."""
+    pdf.set_xy(x, y)
+    pdf.set_font(font_name, "", font_size)
+    pdf.set_text_color(*label_color)
+    label_w = pdf.get_string_width(label)
+    value_w = pdf.get_string_width(value_str) + 2
+
+    # Label
+    pdf.cell(label_w + 1, h, txt=label, ln=0)
+
+    # Pointillés
+    dot_x = x + label_w + 2
+    dot_end = x + w - value_w - 1
+    pdf.set_text_color(180, 180, 180)
+    pdf.set_font(font_name, "", font_size - 1)
+    dot_w = pdf.get_string_width('.')
+    cx = dot_x
+    while cx < dot_end:
+        pdf.set_xy(cx, y)
+        pdf.cell(dot_w, h, txt='.', ln=0)
+        cx += dot_w + 0.3
+
+    # Valeur
+    pdf.set_text_color(*value_color)
+    pdf.set_font(font_name, "B" if bold_value else "", font_size)
+    pdf.set_xy(x + w - value_w, y)
+    pdf.cell(value_w, h, txt=value_str, align='R', ln=0)
 
 
-# --- PDF Generation (V5 dark bg + white container + dotted leaders) ---
+# --- PDF Generation (V6 — pixel-perfect modèle Signe+) ---
 def create_pdf(data, name, membre_bu=""):
     pdf = FPDF()
     pdf.add_page()
-    pw = 210  # page width
-    ph = 297  # page height
+    pw, ph = 210, 297
 
-    # Police Unicode pour accents
-    pdf.add_font("DejaVu", "", FONT_PATH, uni=True)
-    pdf.add_font("DejaVu", "B", FONT_BOLD_PATH, uni=True)
-    pdf.add_font("DejaVu", "I", FONT_ITALIC_PATH, uni=True)
+    pdf.add_font("D", "", FONT_PATH, uni=True)
+    pdf.add_font("D", "B", FONT_BOLD_PATH, uni=True)
+    pdf.add_font("D", "I", FONT_ITALIC_PATH, uni=True)
 
-    # =============================================
-    # FOND GRIS CHARCOAL SUR TOUTE LA PAGE
-    # =============================================
-    pdf.set_fill_color(CHARCOAL_R, CHARCOAL_G, CHARCOAL_B)
-    pdf.rect(0, 0, pw, ph, 'F')
-
-    # =============================================
-    # BANDEAU ROSE EN-TETE (full width, dans le gris)
-    # =============================================
-    banner_h = 28
-    pdf.set_fill_color(ROSE_R, ROSE_G, ROSE_B)
-    pdf.rect(0, 0, pw, banner_h, 'F')
-
-    # Logo sur fond rose
-    if os.path.exists(LOGO_PATH):
-        pdf.image(LOGO_PATH, x=8, y=4, w=45)
-
-    # Parametres dans le bandeau (4 colonnes)
-    pdf.set_text_color(255, 255, 255)
     t_gest = st.session_state.cfg_frais_gestion
     nb_tr = data.get('nb_titres_restaurant', 0)
     v_tjm = data.get('tjm', 0)
     v_jours = data.get('days_worked_month', 0)
-    col_w = 33
-    x_start = 62
+    label_res = data.get('label_reserve', 'Réserve financière')
 
-    # Labels
-    pdf.set_font("DejaVu", 'B', size=6.5)
-    pdf.set_xy(x_start, 5)
-    pdf.cell(col_w, 4, txt="TJM", align='C')
-    pdf.cell(col_w, 4, txt="Nb de jours / mois", align='C')
-    pdf.cell(col_w, 4, txt="Frais de gestion", align='C')
-    pdf.cell(col_w, 4, txt="Tickets-Restaurants", align='C')
+    # ── FOND CHARCOAL ──
+    pdf.set_fill_color(CHARCOAL_R, CHARCOAL_G, CHARCOAL_B)
+    pdf.rect(0, 0, pw, ph, 'F')
 
-    # Valeurs
-    pdf.set_font("DejaVu", 'B', size=12)
-    pdf.set_xy(x_start, 12)
-    pdf.cell(col_w, 7, txt=f"{v_tjm:.0f}\u20ac", align='C')
-    pdf.cell(col_w, 7, txt=f"{v_jours:g}j", align='C')
-    pdf.cell(col_w, 7, txt=f"{t_gest}%", align='C')
-    pdf.cell(col_w, 7, txt=f"{'Oui' if nb_tr > 0 else 'Non'}", align='C')
+    # ── BANDEAU ROSE ──
+    bh = 30
+    pdf.set_fill_color(ROSE_R, ROSE_G, ROSE_B)
+    pdf.rect(0, 0, pw, bh, 'F')
 
-    # =============================================
-    # CONTENEUR BLANC (rectangle avec coins simules)
-    # =============================================
-    container_x = 10
-    container_y = banner_h + 5
-    container_w = pw - 20
-    container_bottom = ph - 42  # reserve pour footer gris
-    container_h = container_bottom - container_y
+    if os.path.exists(LOGO_PATH):
+        pdf.image(LOGO_PATH, x=10, y=5, w=48)
+
+    pdf.set_text_color(255, 255, 255)
+    cw, xs = 33, 64
+    pdf.set_font("D", 'B', 7)
+    pdf.set_xy(xs, 6)
+    for lbl in ["TJM", "Nb de jours / mois", "Frais de gestion", "Tickets-Restaurants"]:
+        pdf.cell(cw, 4, lbl, align='C')
+    pdf.set_font("D", 'B', 13)
+    pdf.set_xy(xs, 13)
+    for val in [f"{v_tjm:.0f}€", f"{v_jours:g}j", f"{t_gest}%", "Oui" if nb_tr > 0 else "Non"]:
+        pdf.cell(cw, 7, val, align='C')
+
+    # ── CONTENEUR BLANC ──
+    cx, cy = 8, bh + 4
+    cw_box = pw - 16
+    footer_y = ph - 38
+    ch = footer_y - cy - 3
     pdf.set_fill_color(255, 255, 255)
-    pdf.rect(container_x, container_y, container_w, container_h, 'F')
+    pdf.rect(cx, cy, cw_box, ch, 'F')
 
-    # =============================================
-    # TITRE SIMULATION
-    # =============================================
-    margin_left = container_x + 5
-    content_w = container_w - 10
-    pdf.set_xy(container_x, container_y + 5)
-    pdf.set_font("DejaVu", 'B', size=18)
+    mx = cx + 6          # marge gauche intérieure
+    mw = cw_box - 12     # largeur contenu
+    lw = 100             # largeur colonne gauche
+
+    # ── TITRE ──
+    pdf.set_xy(cx, cy + 4)
+    pdf.set_font("D", 'B', 16)
     pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
-    pdf.cell(container_w, 10, txt="SIMULATION", ln=1, align="C")
+    pdf.cell(cw_box, 9, "SIMULATION", ln=1, align="C")
     pdf.set_text_color(80, 80, 80)
-    pdf.set_font("DejaVu", "", size=10)
-    pdf.set_x(container_x)
-    pdf.cell(container_w, 6, txt=name, ln=1, align="C")
+    pdf.set_font("D", "", 9)
+    pdf.set_x(cx)
+    pdf.cell(cw_box, 5, name, ln=1, align="C")
     pdf.set_text_color(0, 0, 0)
-    pdf.ln(5)
+    pdf.ln(4)
 
-    # =============================================
-    # DEUX COLONNES : Salaire (gauche) | Camembert (droite)
-    # =============================================
-    y_cols = pdf.get_y()
-    col_left_x = margin_left
-    col_left_w = 98  # largeur colonne texte
+    # ── DEUX COLONNES ──
+    y0 = pdf.get_y()
+    lh = 5.2   # hauteur de ligne
 
-    # --- Colonne gauche : decomposition salaire avec pointilles ---
-    sal_lines = [
+    # Salaire
+    sal = [
         ("Salaire de base", data['base_salary']),
-        ("Prime d'apport d'affaires", data['prime_apport']),
-        ("Compl\u00e9ment de r\u00e9mun\u00e9ration", data['complement_remuneration']),
+        ("Prime d'apports d'affaires", data['prime_apport']),
+        ("Complément de rémunération", data['complement_remuneration']),
     ]
     if data.get('reserve_reintegree', False):
-        label_res = data.get('label_reserve', 'R\u00e9serve financi\u00e8re')
-        sal_lines.append((label_res.capitalize(), data['reserve_brute']))
-    sal_lines.append(("Indemnit\u00e9 Cong\u00e9s Pay\u00e9s", data['indemnite_cp']))
+        sal.append((label_res.capitalize(), data['reserve_brute']))
+    sal.append(("Indemnités Congés Payés", data['indemnite_cp']))
 
-    pdf.set_font("DejaVu", "", size=8.5)
-    pdf.set_text_color(60, 60, 60)
-    line_h = 5.5
-    for (label, val) in sal_lines:
-        val_str = f"{val:,.2f} \u20ac"
-        dotted = _dotted_line(label, val_str, total_chars=58)
-        pdf.set_xy(col_left_x, pdf.get_y())
-        pdf.cell(col_left_w, line_h, txt=dotted, ln=1)
+    y = y0
+    for label, val in sal:
+        _dotted_line(pdf, mx, y, lw, lh, label, f"{val:,.2f}€")
+        y += lh
 
-    # Ligne Salaire Brut (mise en valeur)
-    pdf.ln(1)
-    pdf.set_font("DejaVu", 'B', size=10)
-    pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
-    brut_str = f"{data['gross_salary']:,.2f} \u20ac"
-    dotted_brut = _dotted_line("Salaire Brut", brut_str, total_chars=52)
-    pdf.set_x(col_left_x)
-    pdf.cell(col_left_w, 7, txt=dotted_brut, ln=1)
-    pdf.set_text_color(60, 60, 60)
-    pdf.ln(2)
+    # Salaire Brut (rose, gras)
+    y += 1.5
+    _dotted_line(pdf, mx, y, lw, 6, "Salaire Brut", f"{data['gross_salary']:,.2f}€",
+                 font_size=10, label_color=(ROSE_R, ROSE_G, ROSE_B),
+                 value_color=(ROSE_R, ROSE_G, ROSE_B), bold_value=True)
+    y += 7
 
-    # Charges salariales / patronales
-    pdf.set_font("DejaVu", "", size=8.5)
-    for (label, val) in [("Charges Salariales", data['employee_charges']),
-                          ("Charges Patronales", data['employer_charges'])]:
-        val_str = f"{val:,.2f} \u20ac"
-        dotted = _dotted_line(label, val_str, total_chars=58)
-        pdf.set_x(col_left_x)
-        pdf.cell(col_left_w, line_h, txt=dotted, ln=1)
+    # Charges
+    for label, val in [("Charges Salariales", data['employee_charges']),
+                        ("Charges Patronales", data['employer_charges'])]:
+        _dotted_line(pdf, mx, y, lw, lh, label, f"{val:,.2f}€")
+        y += lh
 
-    y_after_left = pdf.get_y()
+    y_left = y
 
-    # --- Colonne droite : camembert ---
+    # Camembert (droite)
     chart_path = _generer_camembert_pdf(data)
     if chart_path:
-        chart_x = container_x + content_w - 80
-        pdf.image(chart_path, x=chart_x, y=y_cols - 2, w=78)
+        pdf.image(chart_path, x=cx + mw - 76, y=y0 - 2, w=76)
         try:
             os.unlink(chart_path)
         except Exception:
             pass
 
-    # Repositionner apres les deux colonnes
-    pdf.set_y(max(y_after_left, y_cols + 72) + 4)
+    # ── VOS FRAIS ──
+    y = max(y_left, y0 + 70) + 3
+    pdf.set_xy(mx, y)
 
-    # =============================================
-    # SECTION VOS FRAIS
-    # =============================================
     if data.get('total_frais_rembourses', 0) > 0:
-        pdf.set_font("DejaVu", 'B', size=10)
+        pdf.set_font("D", 'B', 9)
         pdf.set_text_color(50, 50, 50)
-        pdf.set_x(margin_left)
-        pdf.cell(content_w, 7, txt="VOS FRAIS :", ln=1)
-        pdf.set_font("DejaVu", "", size=8.5)
-        pdf.set_text_color(60, 60, 60)
-        frais_items = []
-        if data.get('ik_amount', 0) > 0:
-            frais_items.append(("Indemnit\u00e9s Kilom\u00e9triques", data['ik_amount']))
-        if data.get('igd_amount', 0) > 0:
-            frais_items.append(("Indemnit\u00e9s Grands D\u00e9placements", data['igd_amount']))
-        if data.get('forfait_teletravail', 0) > 0:
-            frais_items.append((f"Forfait T\u00e9l\u00e9travail ({data['jours_teletravail']}j x 2.70)", data['forfait_teletravail']))
-        if data.get('other_expenses', 0) > 0:
-            frais_items.append(("Autres Frais", data['other_expenses']))
-        for (label, val) in frais_items:
-            val_str = f"{val:,.2f} \u20ac"
-            dotted = _dotted_line(label, val_str, total_chars=58)
-            pdf.set_x(margin_left)
-            pdf.cell(content_w, line_h, txt=dotted, ln=1)
-        pdf.ln(4)
+        pdf.cell(mw, 6, "VOS FRAIS :", ln=1)
+        y += 6.5
 
-    # =============================================
-    # ENCADRE ROSE CLAIR : BRUT AVEC RESERVE FINANCIERE
-    # =============================================
-    box_x = margin_left
-    box_w = content_w
+        frais = []
+        if data.get('ik_amount', 0) > 0:
+            frais.append(("Indemnités Kilométriques", data['ik_amount']))
+        if data.get('igd_amount', 0) > 0:
+            frais.append(("Indemnités Grands Déplacements", data['igd_amount']))
+        if data.get('forfait_teletravail', 0) > 0:
+            frais.append((f"Forfait Télétravail ({data['jours_teletravail']}j x 2.70)", data['forfait_teletravail']))
+        if data.get('other_expenses', 0) > 0:
+            frais.append(("Autres Frais", data['other_expenses']))
+        for label, val in frais:
+            _dotted_line(pdf, mx, y, mw, lh, label, f"{val:,.2f}€")
+            y += lh
+        y += 3
+
+    # ── SÉPARATEUR FIN ──
+    pdf.set_draw_color(220, 220, 220)
+    pdf.line(mx, y, mx + mw, y)
+    y += 4
+
+    # ── BRUT AVEC RÉSERVE (encadré rose clair) ──
     if data.get('reserve_reintegree', False):
         pdf.set_fill_color(ROSE_FOND_R, ROSE_FOND_G, ROSE_FOND_B)
         pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
-        pdf.set_font("DejaVu", 'B', size=11)
-        pdf.set_x(box_x)
-        pdf.cell(box_w * 0.68, 10, txt="  BRUT AVEC R\u00c9SERVE FINANCI\u00c8RE*", border=0, fill=True)
-        pdf.cell(box_w * 0.32, 10, txt=f"{data['gross_salary']:,.2f} \u20ac", border=0, align='R', fill=True, ln=1)
-        pdf.set_text_color(0, 0, 0)
-        pdf.ln(3)
+        pdf.set_font("D", 'B', 10)
+        pdf.set_xy(mx, y)
+        pdf.cell(mw * 0.65, 9, "  BRUT AVEC RÉSERVE FINANCIÈRE*", fill=True)
+        pdf.set_font("D", 'B', 12)
+        pdf.cell(mw * 0.35, 9, f"{data['gross_salary']:,.2f}€", align='R', fill=True, ln=1)
+        y += 12
 
-    # =============================================
-    # ENCADRE ROSE FORT : NET A PAYER
-    # =============================================
+    # ── NET À PAYER (encadré rose fort) ──
     pdf.set_fill_color(ROSE_R, ROSE_G, ROSE_B)
     pdf.set_text_color(255, 255, 255)
-    pdf.set_font("DejaVu", 'B', size=13)
-    pdf.set_x(box_x)
-    pdf.cell(box_w * 0.68, 12, txt="  NET \u00c0 PAYER AVANT IMP\u00d4TS", border=0, fill=True)
-    pdf.set_font("DejaVu", 'B', size=15)
-    pdf.cell(box_w * 0.32, 12, txt=f"{data['net_payable']:,.2f} \u20ac", border=0, align='R', fill=True, ln=1)
+    pdf.set_font("D", 'B', 11)
+    pdf.set_xy(mx, y)
+    pdf.cell(mw * 0.60, 11, "  NET À PAYER AVANT IMPÔTS", fill=True)
+    pdf.set_font("D", 'B', 15)
+    pdf.cell(mw * 0.40, 11, f"{data['net_payable']:,.2f}€", align='R', fill=True, ln=1)
     pdf.set_text_color(0, 0, 0)
-    pdf.ln(4)
+    y += 14
 
-    # =============================================
-    # NOTE RESERVE
-    # =============================================
+    # ── NOTE RÉSERVE ──
     if data.get('reserve_brute', 0) > 0:
-        label_res = data.get('label_reserve', 'R\u00e9serve financi\u00e8re')
+        pdf.set_font("D", 'B', 7)
+        pdf.set_text_color(80, 80, 80)
+        pdf.set_xy(mx, y)
         if not data.get('reserve_reintegree', False):
-            pdf.set_font("DejaVu", 'B', size=7.5)
-            pdf.set_text_color(80, 80, 80)
-            pdf.set_x(margin_left)
-            pdf.cell(content_w, 5, txt=f"*La {label_res} : {data['reserve_brute']:,.2f} \u20ac brut provisionnée tous les mois.", ln=1)
-        pdf.set_font("DejaVu", 'I', size=6.5)
-        pdf.set_text_color(120, 120, 120)
-        pdf.set_x(margin_left)
-        pdf.multi_cell(content_w, 3.2, txt=f"{label_res.capitalize()} : \u00e9quivalente \u00e0 10% du salaire de base mensuel, ce montant \u00ab mis en r\u00e9serve \u00bb chaque mois est une obligation l\u00e9gale conventionnelle pr\u00e9vue pour vous permettre lors de vos intermissions de faire face \u00e0 vos \u00e9ventuels frais de prospection voire \u00e0 financer votre indemnit\u00e9 de rupture conventionnelle. Cette r\u00e9serve vous appartient et vous est revers\u00e9e en fin de contrat de travail (solde de tout compte).")
+            pdf.cell(mw, 4, f"*La {label_res} : {data['reserve_brute']:,.2f}€", ln=1)
+            y += 4
+        pdf.set_font("D", 'I', 6)
+        pdf.set_text_color(130, 130, 130)
+        pdf.set_xy(mx, y)
+        pdf.multi_cell(mw, 3, f"Réserve financière obligatoire et réglementée définie par la Convention Collective Nationale de Portage Salarial pour vos besoins de prospection et éventuellement l'indemnité de fin de contrat de travail.")
         pdf.set_text_color(0, 0, 0)
 
     # Mutuelle
     if data.get('mutuelle_part_pat', 0) > 0:
-        pdf.ln(1)
-        pdf.set_font("DejaVu", 'I', size=7)
-        pdf.set_text_color(120, 120, 120)
-        pdf.set_x(margin_left)
-        pdf.cell(content_w, 4, txt="Mutuelle d'entreprise incluse, prise en charge \u00e0 50 % dans la simulation pr\u00e9sent\u00e9e.", ln=1)
+        pdf.set_font("D", 'I', 6.5)
+        pdf.set_text_color(130, 130, 130)
+        pdf.set_x(mx)
+        pdf.cell(mw, 3.5, "Mutuelle d'entreprise incluse, prise en charge à 50 % dans la simulation présentée.", ln=1)
         pdf.set_text_color(0, 0, 0)
 
-    # =============================================
-    # FOOTER GRIS
-    # =============================================
-    footer_y = container_bottom + 3
-    footer_h = ph - footer_y
-    pdf.set_fill_color(70, 70, 70)
-    pdf.rect(0, footer_y, pw, footer_h, 'F')
+    # ── FOOTER GRIS ──
+    pdf.set_fill_color(65, 65, 65)
+    pdf.rect(0, footer_y, pw, ph - footer_y, 'F')
 
-    # Logo dans le footer
     if os.path.exists(LOGO_PATH):
-        pdf.image(LOGO_PATH, x=12, y=footer_y + 5, w=35)
+        pdf.image(LOGO_PATH, x=12, y=footer_y + 6, w=32)
 
-    # Signature dans le footer
-    sig_x = 55
-    sig_name = membre_bu if membre_bu else "Gwena\u00eblle CHARPENTIER"
-    pdf.set_xy(sig_x, footer_y + 5)
-    pdf.set_font("DejaVu", 'I', size=10)
+    sig = membre_bu if membre_bu else "Gwenaëlle CHARPENTIER"
+    pdf.set_xy(50, footer_y + 6)
+    pdf.set_font("D", 'I', 10)
     pdf.set_text_color(ROSE_R, ROSE_G, ROSE_B)
-    pdf.cell(90, 6, txt=sig_name, ln=1)
-    pdf.set_xy(sig_x, pdf.get_y())
-    pdf.set_font("DejaVu", "", size=8)
-    pdf.set_text_color(200, 200, 200)
-    pdf.cell(90, 5, txt="Directrice du P\u00f4le Portage Salarial", ln=1)
-    pdf.set_xy(sig_x, pdf.get_y())
-    pdf.cell(90, 5, txt="01 85 53 47 00", ln=1)
+    pdf.cell(100, 5, sig, ln=1)
+    pdf.set_xy(50, pdf.get_y())
+    pdf.set_font("D", "", 7.5)
+    pdf.set_text_color(190, 190, 190)
+    pdf.cell(100, 4, "Directrice du Pôle Portage Salarial", ln=1)
+    pdf.set_xy(50, pdf.get_y())
+    pdf.set_font("D", "", 7)
+    pdf.set_text_color(150, 150, 150)
+    pdf.cell(100, 4, "01 85 53 47 00", ln=1)
 
     pdf.set_text_color(0, 0, 0)
-
     out = pdf.output(dest='S')
     return out.encode('latin-1', 'replace') if isinstance(out, str) else out
 

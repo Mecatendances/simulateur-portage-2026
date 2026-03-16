@@ -765,6 +765,7 @@ def create_pdf(data, name, membre_bu=""):
         {"label": "Salaire de base", "value": f"{data['base_salary']:,.2f}€"},
         {"label": "Prime d'apports d'affaires", "value": f"{data['prime_apport']:,.2f}€"},
         {"label": "Complément de rémunération", "value": f"{data['complement_remuneration']:,.2f}€"},
+        {"label": "Complément apport d'affaires", "value": f"{data['complement_apport_affaires']:,.2f}€"},
     ]
     if data.get('reserve_reintegree', False):
         salary_lines.append({"label": label_res.capitalize(), "value": f"{data['reserve_brute']:,.2f}€"})
@@ -807,8 +808,12 @@ def create_pdf(data, name, membre_bu=""):
         frais_lines=frais_lines,
         chart_path=chart_path or "",
         has_provision=data.get('provision_reserve_financiere', 0) > 0,
-        show_brut_reserve=data.get('reserve_reintegree', False),
+        show_brut_reserve=True,
+        brut_avec_reserve=f"{data['gross_salary']:,.2f}€",
+        net_avant_impot=f"{data['net_before_tax']:,.2f}€",
         net_payable=f"{data['net_payable']:,.2f}€",
+        total_frais=f"{data['total_frais_rembourses']:,.2f}€" if data.get('total_frais_rembourses', 0) > 0 else "",
+        provision_reserve=f"{data['provision_reserve_financiere']:,.2f}€" if data.get('provision_reserve_financiere', 0) > 0 else "",
         reserve_note=reserve_note,
         has_mutuelle=data.get('mutuelle_part_pat', 0) > 0,
         membre_bu=membre_bu or "Gwenaëlle CHARPENTIER",

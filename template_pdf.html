@@ -358,13 +358,23 @@
     {% if show_brut_reserve %}
     <div class="total-block">
       <div class="total-label">BRUT AVEC RÉSERVE FINANCIÈRE*</div>
-      <div class="total-pill small">{{ gross_salary }}</div>
+      <div class="total-pill small">{{ brut_avec_reserve }}</div>
+    </div>
+    {% endif %}
+    {% if provision_reserve %}
+    <div class="total-block">
+      <div class="total-label" style="font-size:7.5pt; color:#888;">Provision réserve financière : {{ provision_reserve }}</div>
     </div>
     {% endif %}
     <div class="total-block">
       <div class="total-label">NET À PAYER AVANT IMPÔTS</div>
       <div class="total-pill">{{ net_payable }}</div>
     </div>
+    {% if total_frais %}
+    <div class="total-block" style="margin-top:1mm;">
+      <div class="total-label" style="font-size:7pt; color:#888;">dont frais remboursés : {{ total_frais }}</div>
+    </div>
+    {% endif %}
   </div>
 
   <!-- NOTE RESERVE -->

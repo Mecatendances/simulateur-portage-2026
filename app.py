@@ -607,6 +607,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
 
 # --- Chemin logo ---
 LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_signe_plus.png")
+LOGO_BLEU_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_signe_plus_bleu.png")
 
 
 def _generer_camembert_pdf(data):
@@ -793,7 +794,7 @@ def create_pdf(data, name, membre_bu=""):
         tpl = Template(f.read())
 
     html_str = tpl.render(
-        logo_path=LOGO_PATH if os.path.exists(LOGO_PATH) else "",
+        logo_path=LOGO_BLEU_PATH if os.path.exists(LOGO_BLEU_PATH) else (LOGO_PATH if os.path.exists(LOGO_PATH) else ""),
         tjm=f"{data.get('tjm', 0):.0f}",
         days=f"{data.get('days_worked_month', 0):g}",
         frais_gestion=f"{t_gest}",

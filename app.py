@@ -428,7 +428,8 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 pt_ = pd_ + mutuelle_part_pat + ps_
                 c_ = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, pt_)
                 fs_ = round(pt_ * 0.08, 2)
-                ch = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
+                cpf_cdd_est = round(brut_est * 0.01, 2) if is_cdd else 0.0
+                ch = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_ + cpf_cdd_est
                 tn = ch / pool if pool > 0 else 0
             else:
                 # Reserve/precarite HORS brut : charges marginales
@@ -442,7 +443,8 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 c_ = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, pt_)
                 fs_ = round(pt_ * 0.08, 2)
                 icp_ = brut_components * rate_cp
-                ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_
+                cpf_cdd_est = round(brut_est * 0.01, 2) if is_cdd else 0.0
+                ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_ + cpf_cdd_est
                 reserve_brut_cp = res_est * (1 + rate_cp)
                 brut_avec_reserve = brut_est + reserve_brut_cp
                 ta2 = min(brut_avec_reserve, pmss)
@@ -497,11 +499,14 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     cotis = calculer_cotisations(gross_salary, pmss, atmp_rate, fnal_rate, prev_pat_total)
     forfait_social = round(prev_pat_total * 0.08, 2)
 
+    # Contribution CPF-CDD (1% patronal sur brut, CDD uniquement)
+    cpf_cdd = round(gross_salary * 0.01, 2) if is_cdd else 0.0
+
     # RGDU (toujours appliquee)
     reduction_rgdu = calculer_rgdu(gross_salary, smic, use_fnal_50=effectif_sup_50)
 
     # Charges patronales totales
-    employer_charges_avant_rgdu = cotis["total_pat"] + mutuelle_part_pat + tr_part_pat + forfait_social
+    employer_charges_avant_rgdu = cotis["total_pat"] + mutuelle_part_pat + tr_part_pat + forfait_social + cpf_cdd
     employer_charges = employer_charges_avant_rgdu - reduction_rgdu
 
     # Charges salariales totales
@@ -577,6 +582,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "cotis_total_sal": cotis["total_sal"],
         "cotis_details": cotis["details"],
         "forfait_social": forfait_social,
+        "cpf_cdd": cpf_cdd,
         "prev_pat_total": prev_pat_total,
         "tranche_a": cotis["tranche_a"],
         "tranche_b": cotis["tranche_b"],
@@ -1226,6 +1232,7 @@ with tab_simu:
 **+ Mutuelle Part Patronale** : {results['mutuelle_part_pat']:,.2f} EUR
 **+ Titres Restaurant Part Patronale** : {results['tr_part_pat']:,.2f} EUR
 **+ Forfait Social Prevoyance** (8% de {results['prev_pat_total']:,.2f}) : {results['forfait_social']:,.2f} EUR
+{"**+ Contribution CPF-CDD** (1%) : " + f"{results['cpf_cdd']:,.2f} EUR" if results.get('cpf_cdd', 0) > 0 else ""}
 **- Reduction RGDU 2026** : {results.get('reduction_rgdu', 0):,.2f} EUR
 
 ---

@@ -401,10 +401,16 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
             pool = budget_salaire / (1 + taux_charges)
 
             if is_cdd:
-                # CDD : precarite = (base + prime + complement) x 10%
-                # => pool = (1 + rate_reserve) x (base + prime + complement)
-                # => complement = pool / (1 + rate_reserve) - base - prime
-                ct_est = max(0, pool / (1 + rate_reserve) - base_salary - prime_apport)
+                # CDD : facteur 1.2705 = 1 + 5% + (1.05×10%) + (1.155×10%)
+                # precarite_fixe = (base + prime) × 10%
+                # cp_fixe = (base + prime + precarite_fixe) × 10%
+                # complement_rem = (pool - base - prime - precarite_fixe - cp_fixe) / 1.2705
+                facteur_cdd = 1 + rate_prime + (1 + rate_prime) * rate_reserve + (1 + rate_prime) * (1 + rate_reserve) * rate_cp
+                preca_fixe = (base_salary + prime_apport) * rate_reserve
+                cp_fixe = (base_salary + prime_apport + preca_fixe) * rate_cp
+                comp_rem_est = max(0, (pool - base_salary - prime_apport - preca_fixe - cp_fixe) / facteur_cdd)
+                comp_apport_est = comp_rem_est * rate_prime
+                ct_est = comp_rem_est + comp_apport_est
                 res_est = (base_salary + prime_apport + ct_est) * rate_reserve
             else:
                 # CDI : reserve = base x 10% (fixe)
@@ -414,8 +420,8 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
             if reserve_reintegree:
                 brut_components = base_salary + prime_apport + res_est + ct_est
                 if is_cdd:
-                    # CDD : ICP = (base + prime + precarite) x 10%
-                    icp_ = (base_salary + prime_apport + res_est) * rate_cp
+                    # CDD : ICP = (base + prime + complement + apport + precarite) x 10%
+                    icp_ = brut_components * rate_cp
                 else:
                     # CDI : ICP = (base + prime + reserve + complement) x 10%
                     icp_ = brut_components * rate_cp
@@ -466,23 +472,23 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     pool = budget_salaire / (1 + taux_charges)
 
     if is_cdd:
-        # CDD : complement = pool / (1 + rate_reserve) - base - prime
-        complement_total = max(0, pool / (1 + rate_reserve) - base_salary - prime_apport)
+        # CDD : facteur cascade 1.2705
+        facteur_cdd = 1 + rate_prime + (1 + rate_prime) * rate_reserve + (1 + rate_prime) * (1 + rate_reserve) * rate_cp
+        preca_fixe = (base_salary + prime_apport) * rate_reserve
+        cp_fixe = (base_salary + prime_apport + preca_fixe) * rate_cp
+        complement_remuneration = max(0, (pool - base_salary - prime_apport - preca_fixe - cp_fixe) / facteur_cdd)
+        complement_apport_affaires = complement_remuneration * rate_prime
+        complement_total = complement_remuneration + complement_apport_affaires
         reserve_brute = (base_salary + prime_apport + complement_total) * rate_reserve
     else:
         complement_total = max(0, pool - base_salary - prime_apport - reserve_brute)
-
-    complement_remuneration = complement_total / (1 + rate_prime)
-    complement_apport_affaires = complement_total - complement_remuneration
+        complement_remuneration = complement_total / (1 + rate_prime)
+        complement_apport_affaires = complement_total - complement_remuneration
 
     if reserve_reintegree:
         brut_base = base_salary + prime_apport + reserve_brute + complement_total
-        if is_cdd:
-            # CDD : ICP = (base + prime + precarite) x 10%
-            indemnite_cp = (base_salary + prime_apport + reserve_brute) * rate_cp
-        else:
-            # CDI : ICP = (base + prime + reserve + complement) x 10%
-            indemnite_cp = brut_base * rate_cp
+        # ICP sur tout (CDI et CDD)
+        indemnite_cp = brut_base * rate_cp
         gross_salary = brut_base + indemnite_cp
     else:
         # Reserve/precarite hors brut (provisionnee)

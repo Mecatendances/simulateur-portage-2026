@@ -5,3 +5,6 @@ __pycache__/
 .streamlit/
 analyze_excel.py
 analyze_excel_deep.py
+
+*:Zone.Identifier
+.claude/

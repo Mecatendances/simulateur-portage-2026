@@ -807,9 +807,60 @@ def create_pdf(data, name, signataire):
 st.set_page_config(page_title="Simulateur Portage Salarial 2026", layout="wide")
 
 # Mire SSO Microsoft 365 (app Entra mono-tenant Signe+, config dans .streamlit/secrets.toml [auth])
+_MS_LOGO = ("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 21 21'>"
+            "<rect x='1' y='1' width='9' height='9' fill='%23f25022'/><rect x='11' y='1' width='9' height='9' fill='%237fba00'/>"
+            "<rect x='1' y='11' width='9' height='9' fill='%2300a4ef'/><rect x='11' y='11' width='9' height='9' fill='%23ffb900'/></svg>")
+
+
+def page_connexion():
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo S+ PS horizontal bleu 1 (1).svg"), "rb") as f:
+        logo = "data:image/svg+xml;base64," + base64.b64encode(f.read()).decode()
+    st.markdown(f"""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+header, [data-testid="stToolbar"], [data-testid="stSidebar"], [data-testid="collapsedControl"], footer {{ display: none !important; }}
+.stApp {{
+  background:
+    radial-gradient(900px 500px at 85% 10%, rgba(228,88,104,.35), transparent 60%),
+    radial-gradient(700px 500px at 5% 95%, rgba(123,163,198,.25), transparent 60%),
+    #061535;
+}}
+.block-container {{ max-width: 480px; padding: max(6vh, calc(50vh - 260px)) 1rem 2rem !important; }}
+.st-key-login_card {{
+  background: #fff; border-radius: 22px; padding: 40px 36px 28px;
+  box-shadow: 0 30px 80px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.06);
+  font-family: 'Poppins', 'Segoe UI', sans-serif;
+}}
+.login-logo img {{ height: 46px; width: auto; display: block; }}
+.login-eyebrow {{ margin: 28px 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: #e45868; font-family: 'Poppins', sans-serif !important; }}
+.login-title {{ margin: 0; font-size: 32px; line-height: 1.15; font-weight: 700; color: #061535; font-family: 'Poppins', sans-serif !important; }}
+.login-text {{ margin: 14px 0 26px !important; font-size: 15px; line-height: 1.6; color: #5a6275; font-family: 'Poppins', sans-serif !important; }}
+.st-key-login_card .stButton button {{
+  width: 100%; height: 52px; border-radius: 12px; border: none; padding-left: 40px;
+  background: #061535 url("{_MS_LOGO}") no-repeat 22px center / 20px 20px;
+  color: #fff; font-size: 15px; font-weight: 600;
+  transition: transform .15s ease, box-shadow .15s ease, background-color .15s ease;
+}}
+.st-key-login_card .stButton button p {{ font-family: 'Poppins', sans-serif !important; font-weight: 600; font-size: 15px; }}
+.st-key-login_card .stButton button:hover {{ background-color: #e45868; color: #fff; transform: translateY(-1px); box-shadow: 0 10px 24px rgba(228,88,104,.35); }}
+.st-key-login_card .stButton button:focus-visible {{ outline: 3px solid #7ba3c6; outline-offset: 2px; }}
+.login-note {{ margin-top: 18px; padding-top: 16px; border-top: 1px solid #eef0f4; font-size: 12.5px; color: #8a91a3; text-align: center; font-family: 'Poppins', sans-serif !important; }}
+.login-footer {{ margin-top: 22px; text-align: center; font-family: 'Poppins', sans-serif; font-size: 12px; color: rgba(255,255,255,.55); }}
+</style>""", unsafe_allow_html=True)
+    with st.container(key="login_card"):
+        st.markdown(f"""
+<div class="login-logo"><img src="{logo}" alt="Signe+ Portage Salarial"></div>
+<div class="login-eyebrow">Simulateur portage salarial</div>
+<div class="login-title" role="heading" aria-level="1">Bienvenue</div>
+<p class="login-text">Construisez des simulations de revenus précises et générez la proposition client en quelques secondes.</p>
+""", unsafe_allow_html=True)
+        st.button("Se connecter avec Microsoft", on_click=st.login, use_container_width=True)
+        st.markdown('<div class="login-note">🔒 Accès réservé aux équipes Signe+ Portage Salarial</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-footer">© Signe+ Portage Salarial</div>', unsafe_allow_html=True)
+
+
 if not st.user.is_logged_in:
-    st.title("Simulateur de Portage Salarial 2026")
-    st.button("Se connecter avec Microsoft 365", on_click=st.login, type="primary")
+    page_connexion()
     st.stop()
 
 # Sidebar

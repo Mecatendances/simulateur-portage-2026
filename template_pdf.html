@@ -283,6 +283,10 @@
   <!-- PARAMETRES -->
   <div class="params-bar">
     <div class="param-item">
+      <span class="label">Montant disponible</span>
+      <div class="pill">{{ montant_dispo }}</div>
+    </div>
+    <div class="param-item">
       <span class="label">TJM</span>
       <div class="pill">{{ tjm }}€</div>
     </div>
@@ -294,6 +298,12 @@
       <span class="label">Frais de gestion</span>
       <div class="pill">{{ frais_gestion }}%</div>
     </div>
+    {% if charges_sps %}
+    <div class="param-item">
+      <span class="label">Charges S+PS</span>
+      <div class="pill">{{ charges_sps }}</div>
+    </div>
+    {% endif %}
     <div class="param-item">
       <span class="label">Tickets-Restaurants</span>
       <div class="pill">{{ tr_label }}</div>
@@ -352,7 +362,7 @@
       <div class="legend">
         <div class="leg-item"><div class="leg-dot" style="background:var(--blue)"></div>Net à payer</div>
         <div class="leg-item"><div class="leg-dot" style="background:#999"></div>Frais de gestion</div>
-        <div class="leg-item"><div class="leg-dot" style="background:var(--pink)"></div>Cotisations Sociales et Patronales</div>
+        <div class="leg-item"><div class="leg-dot" style="background:var(--pink)"></div>Charges patronales et salariales</div>
         {% if has_provision %}<div class="leg-item"><div class="leg-dot" style="background:#F48FB1"></div>Provision Réserve</div>{% endif %}
       </div>
     </div>
@@ -360,19 +370,12 @@
 
   <!-- TOTAUX -->
   <div class="totals">
-    {% if show_brut_reserve %}
     <div class="total-block">
-      <div class="total-label">BRUT AVEC RÉSERVE FINANCIÈRE*</div>
-      <div class="total-pill small">{{ brut_avec_reserve }}</div>
+      <div class="total-label">SALAIRE BRUT</div>
+      <div class="total-pill small">{{ gross_salary }}</div>
     </div>
-    {% endif %}
-    {% if provision_reserve %}
     <div class="total-block">
-      <div class="total-label" style="font-size:7.5pt; color:#888;">Provision réserve financière : {{ provision_reserve }}</div>
-    </div>
-    {% endif %}
-    <div class="total-block">
-      <div class="total-label">NET À PAYER AVANT IMPÔTS</div>
+      <div class="total-label">NET À PAYER AVANT IMPÔTS (frais inclus)</div>
       <div class="total-pill">{{ net_payable }}</div>
     </div>
     {% if total_frais %}
@@ -385,8 +388,7 @@
   <!-- NOTE RESERVE -->
   <div class="reserve-box">
     {% if reserve_note %}<strong>{{ reserve_note }}</strong>{% endif %}
-    Réserve financière obligatoire et réglementée définie par la Convention Collective Nationale de Portage Salarial
-    pour vos besoins de prospection et éventuellement l'indemnité de fin de contrat de travail.
+    {{ reserve_text }}
     {% if has_mutuelle %}<br>Mutuelle d'entreprise incluse, prise en charge à 50 % dans la simulation présentée.{% endif %}
   </div>
 
@@ -396,10 +398,10 @@
       {% if logo_path %}<img src="file://{{ logo_path }}">{% endif %}
     </div>
     <div class="contact-info">
-      <div class="name">{{ membre_bu }}</div>
-      <div class="title">Directrice du Pôle Portage Salarial</div>
-      <div class="phone">📞 01 85 53 47 00</div>
-      <div class="email">✉️ <a href="mailto:gwenaelle.charpentier@signeplusportagesalarial.com">gwenaelle.charpentier@signeplusportagesalarial.com</a></div>
+      <div class="name">{{ contact.name }}</div>
+      <div class="title">{{ contact.title }}</div>
+      <div class="phone">📞 {{ contact.phone }}{% if contact.mobile %} &nbsp;·&nbsp; 📱 {{ contact.mobile }}{% endif %}</div>
+      <div class="email">✉️ <a href="mailto:{{ contact.email }}">{{ contact.email }}</a></div>
     </div>
   </div>
 

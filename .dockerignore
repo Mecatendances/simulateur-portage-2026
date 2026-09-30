@@ -1,0 +1,7 @@
+.streamlit/
+.git/
+venv/
+__pycache__/
+*.pdf
+.gstack/
+.claude/

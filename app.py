@@ -50,12 +50,50 @@ MOIS_LABELS = {
     9: "Septembre", 10: "Octobre", 11: "Novembre", 12: "Décembre",
 }
 
-# Membres BU Portage Salarial
-MEMBRES_BU = [
-    "Gwenaelle CHARPENTIER - Directrice du Pole Portage Salarial",
-    "Membre BU 2",
-    "Membre BU 3",
-]
+# Signataire (footer PDF + signature email) = personne connectee en SSO, fiche lue dans Entra.
+# Acces : groupe Entra "Simulateur PS". L'app Entra doit avoir User.Read.All (application).
+TEL_STANDARD = "01 85 53 47 00"
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fiche_entra(email):
+    """Nom, fonction et mobile depuis Microsoft Graph ; {} si Graph est indisponible."""
+    try:
+        auth = st.secrets["auth"]
+        tenant = auth["server_metadata_url"].split("/")[3]
+        tok = requests.post(f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token", timeout=10, data={
+            "grant_type": "client_credentials", "client_id": auth["client_id"],
+            "client_secret": auth["client_secret"], "scope": "https://graph.microsoft.com/.default",
+        }).json()["access_token"]
+        r = requests.get(f"https://graph.microsoft.com/v1.0/users/{email}?$select=displayName,jobTitle,mobilePhone",
+                         headers={"Authorization": f"Bearer {tok}"}, timeout=10)
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return {}
+
+
+def contact_signataire(email, nom=""):
+    email = (email or "").lower()
+    f = fiche_entra(email) if email else {}
+    return {"name": f.get("displayName") or nom or email, "title": f.get("jobTitle") or "",
+            "mobile": f.get("mobilePhone") or "", "email": email, "phone": TEL_STANDARD}
+
+
+# Texte legal de la reserve (PDF + email), selon le type de contrat
+TEXTE_RESERVE = {
+    "CDD": ("La mise en réserve chaque mois correspond à l'indemnité de fin de contrat prévue par la "
+            "Convention Collective Nationale de Portage Salarial."),
+    "CDI": ("La mise en réserve chaque mois est une obligation légale conventionnelle prévue pour vous "
+            "permettre, lors de vos intermissions, de faire face à vos éventuels frais de prospection, voire "
+            "à financer votre indemnité de rupture conventionnelle."),
+}
+TEXTE_RESERVE_FIN = (" Dans tous les cas, cette réserve vous appartient. Son solde vous est communiqué par compte "
+                     "d'activité établi par nos soins, et vous est reversé en fin de contrat (solde de tout compte).")
+
+
+def texte_reserve(type_contrat):
+    return TEXTE_RESERVE.get(type_contrat, TEXTE_RESERVE["CDI"]) + TEXTE_RESERVE_FIN
 
 # Valeur faciale TR standard
 TR_VALEUR_FACIALE = 14.36
@@ -234,6 +272,11 @@ def calculer_cotisations(brut, pmss, atmp_rate, fnal_rate, prev_pat_contribution
     total_sal = 0
 
     for nom, cotis in COTISATIONS_2026.items():
+        # CET (Contribution d'Equilibre Technique) : due uniquement si le brut
+        # depasse le plafond SS (PMSS proratise inclus). Nulle en dessous.
+        if nom in ("cet_t1", "cet_t2") and brut <= pmss:
+            continue
+
         # Determiner la base
         if cotis["base"] == "TOTALITE":
             base = brut
@@ -337,7 +380,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                      frais_partages_pct=0.0, commission_apporteur=0.0,
                      type_contrat="CDI", provision_cp=False,
                      nb_journees=0, nb_jours_ouvres=22,
-                     mois_num=3, is_temps_partiel=False):
+                     mois_num=3, is_temps_partiel=False, taux_charges_sps=0.0):
 
     cfg_base = st.session_state.cfg_base_salary
     rate_gestion = st.session_state.cfg_frais_gestion / 100.0
@@ -377,9 +420,10 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
     management_fees = turnover * rate_gestion
     frais_intermediation = turnover * (frais_intermediation_pct / 100.0)
     frais_partages = turnover * (frais_partages_pct / 100.0)
+    charges_sps = turnover * (taux_charges_sps / 100.0)
 
-    # Montant disponible = CA - Gestion - Intermediation - Partages - Commission
-    montant_disponible = turnover - management_fees - frais_intermediation - frais_partages - commission_apporteur
+    # Montant disponible = CA - Gestion - Intermediation - Partages - Commission - Charges S+PS
+    montant_disponible = turnover - management_fees - frais_intermediation - frais_partages - commission_apporteur - charges_sps
 
     # Total des frais rembourses
     total_frais_rembourses = ik_amount + igd_amount + forfait_teletravail + other_expenses
@@ -448,7 +492,11 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 c_ = calculer_cotisations(brut_est, pmss, atmp_rate, fnal_rate, pt_)
                 fs_ = round(pt_ * 0.08, 2)
                 cpf_cdd_est = round(brut_est * 0.01, 2) if is_cdd else 0.0
-                ch = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_ + cpf_cdd_est
+                # CDD : l'ICP est deja dans le pool (cascade 1.2705), ne pas la recompter en charge
+                ch = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + (0 if is_cdd else icp_) + cpf_cdd_est
+                # RGDU : reduction des charges patronales (jamais dans le brut), deduite ici pour que
+                # l'economie revienne au salaire au lieu de gonfler la provision (ticket 717)
+                ch -= calculer_rgdu(brut_est, smic, use_fnal_50=effectif_sup_50)
                 tn = ch / pool if pool > 0 else 0
             else:
                 # Reserve/precarite HORS brut : charges marginales
@@ -463,7 +511,8 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 fs_ = round(pt_ * 0.08, 2)
                 icp_ = brut_components * rate_cp
                 cpf_cdd_est = round(brut_est * 0.01, 2) if is_cdd else 0.0
-                ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + icp_ + cpf_cdd_est
+                ch_brut = c_["total_pat"] + mutuelle_part_pat + tr_part_pat + fs_ + (0 if is_cdd else icp_) + cpf_cdd_est
+                ch_brut -= calculer_rgdu(brut_est, smic, use_fnal_50=effectif_sup_50)  # cf. ticket 717
                 reserve_brut_cp = res_est * (1 + rate_cp)
                 brut_avec_reserve = brut_est + reserve_brut_cp
                 ta2 = min(brut_avec_reserve, pmss)
@@ -473,7 +522,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
                 pt2 = pd2 + mutuelle_part_pat + ps2
                 c2_ = calculer_cotisations(brut_avec_reserve, pmss, atmp_rate, fnal_rate, pt2)
                 fs2 = round(pt2 * 0.08, 2)
-                ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + res_est * rate_cp + mutuelle_part_pat * (res_est / pool if pool > 0 else 0)
+                ch_reserve = (c2_["total_pat"] + fs2) - (c_["total_pat"] + fs_) + (0 if is_cdd else res_est * rate_cp) + mutuelle_part_pat * (res_est / pool if pool > 0 else 0)
                 tn = (ch_brut + ch_reserve) / pool if pool > 0 else 0
 
             if abs(tn - taux_charges) < 0.00001:
@@ -569,7 +618,7 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         net_hors_cp = brut_hors_cp - employee_charges_hors_cp
 
     # Label selon type de contrat
-    label_reserve = "Indemnite de precarite" if type_contrat == "CDD" else "Reserve financiere"
+    label_reserve = "Indemnité de précarité" if type_contrat == "CDD" else "Réserve financière"
 
     return {
         "tjm": tjm,
@@ -579,7 +628,9 @@ def calculate_salary(tjm, days_worked_month, days_worked_week,
         "frais_intermediation": frais_intermediation,
         "frais_partages": frais_partages,
         "commission_apporteur": commission_apporteur,
+        "charges_sps": charges_sps,
         "montant_disponible": montant_disponible,
+        "total_deductions": turnover - montant_disponible,
         "ik_amount": ik_amount,
         "igd_amount": igd_amount,
         "forfait_teletravail": forfait_teletravail,
@@ -637,129 +688,19 @@ LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_signe
 LOGO_BLEU_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo_signe_plus_bleu.png")
 
 
-def _generer_camembert_pdf(data):
-    """Génère le camembert style modèle Signe+ : bleu/rose avec légende horizontale."""
-    frais_gestion_total = (data['management_fees'] + data['frais_intermediation']
-                           + data.get('frais_partages', 0) + data.get('commission_apporteur', 0))
-    cotis_sociales = (data['cotis_total_pat'] + data['cotis_total_sal']
-                      + data['forfait_social'] - data['reduction_rgdu']
-                      + data['mutuelle_part_pat'] + data['mutuelle_part_sal']
-                      + data['tr_part_pat'] + data['tr_part_sal'])
-    provision_viz = data['provision_reserve_financiere'] if not data.get('reserve_reintegree', False) else 0
-
-    labels = ['Net à payer', 'Frais de gestion', 'Cotisations Sociales\net Patronales', 'Provision Réserve']
-    values = [data['net_payable'], frais_gestion_total, cotis_sociales, provision_viz]
-    colors = ['#4A90D9', '#A0A0A0', '#E91E63', '#F48FB1']
-
-    filtered = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 0]
-    if not filtered:
-        return None
-    labels_f, values_f, colors_f = zip(*filtered)
-
-    fig = plt.figure(figsize=(3.4, 4.0))
-    gs = fig.add_gridspec(2, 1, height_ratios=[5, 1], hspace=0.05)
-
-    ax = fig.add_subplot(gs[0])
-    ax.set_title("Ventilation chiffre d'affaires", fontsize=8.5, fontweight='bold',
-                 pad=8, color='#333333', fontfamily='sans-serif')
-
-    wedges, texts, autotexts = ax.pie(
-        values_f, colors=colors_f, autopct='%1.1f%%',
-        textprops={'fontsize': 7.5, 'fontweight': 'bold'}, pctdistance=0.75,
-        startangle=90, wedgeprops={'linewidth': 0.5, 'edgecolor': 'white'}
-    )
-    for t in texts:
-        t.set_text('')
-    for t in autotexts:
-        t.set_color('white')
-        t.set_fontsize(7)
-    ax.add_artist(plt.Circle((0, 0), 0.38, fc='white'))
-
-    # Légende horizontale en bas (style modèle)
-    ax_leg = fig.add_subplot(gs[1])
-    ax_leg.axis('off')
-    from matplotlib.patches import FancyBboxPatch
-    legend_items = list(zip(labels_f, colors_f))
-    n = len(legend_items)
-    for i, (lbl, col) in enumerate(legend_items):
-        x = 0.02 + (i / n) * 0.96
-        ax_leg.add_patch(plt.Rectangle((x, 0.55), 0.025, 0.35, fc=col, transform=ax_leg.transAxes))
-        ax_leg.text(x + 0.035, 0.72, lbl.replace('\n', ' '), transform=ax_leg.transAxes,
-                    fontsize=5.5, va='center', color='#444444', fontfamily='sans-serif')
-
-    plt.subplots_adjust(left=0.02, right=0.98, top=0.92, bottom=0.02)
-
-    tmp = tempfile.NamedTemporaryFile(suffix='.png', delete=False)
-    plt.savefig(tmp.name, dpi=180, bbox_inches='tight', facecolor='white', edgecolor='none')
-    plt.close()
-    return tmp.name
-
-
-# --- Couleurs S+ ---
-ROSE_R, ROSE_G, ROSE_B = 233, 30, 99
-ROSE_CLAIR_R, ROSE_CLAIR_G, ROSE_CLAIR_B = 252, 228, 236
-ROSE_FOND_R, ROSE_FOND_G, ROSE_FOND_B = 252, 228, 236  # FCE4EC
-GRIS_R, GRIS_G, GRIS_B = 245, 245, 245
-CHARCOAL_R, CHARCOAL_G, CHARCOAL_B = 50, 50, 50
-
-
-# --- Chemin police Unicode (bundlées dans le projet) ---
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
-FONT_PATH = os.path.join(_BASE_DIR, "fonts", "DejaVuSans.ttf")
-FONT_BOLD_PATH = os.path.join(_BASE_DIR, "fonts", "DejaVuSans-Bold.ttf")
-FONT_ITALIC_PATH = os.path.join(_BASE_DIR, "fonts", "DejaVuSans-Oblique.ttf")
-# Fallback système si les polices bundlées n'existent pas
-if not os.path.exists(FONT_PATH):
-    FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    FONT_BOLD_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-    FONT_ITALIC_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"
-
-
-def _dotted_line(pdf, x, y, w, h, label, value_str, font_name="D", font_size=8.5,
-                 label_color=(60, 60, 60), value_color=(60, 60, 60), bold_value=False):
-    """Dessine une ligne avec pointillés entre le label et la valeur (style modèle)."""
-    pdf.set_xy(x, y)
-    pdf.set_font(font_name, "", font_size)
-    pdf.set_text_color(*label_color)
-    label_w = pdf.get_string_width(label)
-    value_w = pdf.get_string_width(value_str) + 2
-
-    # Label
-    pdf.cell(label_w + 1, h, txt=label, ln=0)
-
-    # Pointillés
-    dot_x = x + label_w + 2
-    dot_end = x + w - value_w - 1
-    pdf.set_text_color(180, 180, 180)
-    pdf.set_font(font_name, "", font_size - 1)
-    dot_w = pdf.get_string_width('.')
-    cx = dot_x
-    while cx < dot_end:
-        pdf.set_xy(cx, y)
-        pdf.cell(dot_w, h, txt='.', ln=0)
-        cx += dot_w + 0.3
-
-    # Valeur
-    pdf.set_text_color(*value_color)
-    pdf.set_font(font_name, "B" if bold_value else "", font_size)
-    pdf.set_xy(x + w - value_w, y)
-    pdf.cell(value_w, h, txt=value_str, align='R', ln=0)
-
-
 # --- PDF Generation (V8 — HTML/CSS via WeasyPrint) ---
 _TEMPLATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd(), "template_pdf.html")
 
 
 def _generer_chart_png(data):
     """Génère le donut chart en PNG pour le PDF."""
-    frais_g = (data['management_fees'] + data['frais_intermediation']
-               + data.get('frais_partages', 0) + data.get('commission_apporteur', 0))
+    frais_g = data['total_deductions']
     cotis = (data['cotis_total_pat'] + data['cotis_total_sal'] + data['forfait_social']
              - data['reduction_rgdu'] + data['mutuelle_part_pat'] + data['mutuelle_part_sal']
              + data['tr_part_pat'] + data['tr_part_sal'])
     prov = data['provision_reserve_financiere'] if not data.get('reserve_reintegree', False) else 0
 
-    labels = ['Net à payer', 'Frais de gestion', 'Cotisations', 'Provision']
+    labels = ['Net à payer', 'Frais de gestion', 'Charges patronales et salariales', 'Provision']
     values = [data['net_payable'], frais_g, cotis, prov]
     colors = ['#4A90D9', '#9E9E9E', '#E91E63', '#F48FB1']
     filt = [(l, v, c) for l, v, c in zip(labels, values, colors) if v > 0]
@@ -781,11 +722,13 @@ def _generer_chart_png(data):
     return tmp.name
 
 
-def create_pdf(data, name, membre_bu=""):
+def create_pdf(data, name, signataire):
     """Génère le PDF via HTML + WeasyPrint."""
     t_gest = st.session_state.cfg_frais_gestion
     nb_tr = data.get('nb_titres_restaurant', 0)
     label_res = data.get('label_reserve', 'Réserve financière')
+
+    # Contact signataire (footer)
 
     # Lignes salaire
     salary_lines = [
@@ -809,10 +752,12 @@ def create_pdf(data, name, membre_bu=""):
     if data.get('other_expenses', 0) > 0:
         frais_lines.append({"label": "Autres Frais", "value": f"{data['other_expenses']:,.2f}€"})
 
-    # Reserve note
+    # Reserve note (titre en gras + texte explicatif) — montant chargé provisionné
     reserve_note = ""
-    if data.get('reserve_brute', 0) > 0 and not data.get('reserve_reintegree', False):
-        reserve_note = f"*La {label_res} : {data['reserve_brute']:,.2f}€ brut provisionnée tous les mois."
+    reserve_text = ""
+    if data.get('provision_reserve_financiere', 0) > 0 and not data.get('reserve_reintegree', False):
+        reserve_note = f"(*) {label_res} : {data['provision_reserve_financiere']:,.2f}€ provisionnés tous les mois (montant chargé)."
+        reserve_text = texte_reserve(data.get('type_contrat'))
 
     # Chart
     chart_path = _generer_chart_png(data)
@@ -826,7 +771,9 @@ def create_pdf(data, name, membre_bu=""):
         tjm=f"{data.get('tjm', 0):.0f}",
         days=f"{data.get('days_worked_month', 0):g}",
         frais_gestion=f"{t_gest}",
+        charges_sps=f"{data['charges_sps']:,.2f}€" if data.get('charges_sps', 0) > 0 else "",
         tr_label="Oui" if nb_tr > 0 else "Non",
+        montant_dispo=f"{data.get('montant_disponible', 0):,.0f}€",
         name=name,
         salary_lines=salary_lines,
         gross_salary=f"{data['gross_salary']:,.2f}€",
@@ -835,15 +782,13 @@ def create_pdf(data, name, membre_bu=""):
         frais_lines=frais_lines,
         chart_path=chart_path or "",
         has_provision=data.get('provision_reserve_financiere', 0) > 0,
-        show_brut_reserve=True,
-        brut_avec_reserve=f"{data['gross_salary']:,.2f}€",
         net_avant_impot=f"{data['net_before_tax']:,.2f}€",
         net_payable=f"{data['net_payable']:,.2f}€",
         total_frais=f"{data['total_frais_rembourses']:,.2f}€" if data.get('total_frais_rembourses', 0) > 0 else "",
-        provision_reserve=f"{data['provision_reserve_financiere']:,.2f}€" if data.get('provision_reserve_financiere', 0) > 0 else "",
         reserve_note=reserve_note,
+        reserve_text=reserve_text,
+        contact=signataire,
         has_mutuelle=data.get('mutuelle_part_pat', 0) > 0,
-        membre_bu=membre_bu or "Gwenaëlle CHARPENTIER",
     )
 
     pdf_bytes = HTML(string=html_str).write_pdf()
@@ -861,8 +806,17 @@ def create_pdf(data, name, membre_bu=""):
 
 st.set_page_config(page_title="Simulateur Portage Salarial 2026", layout="wide")
 
+# Mire SSO Microsoft 365 (app Entra mono-tenant Signe+, config dans .streamlit/secrets.toml [auth])
+if not st.user.is_logged_in:
+    st.title("Simulateur de Portage Salarial 2026")
+    st.button("Se connecter avec Microsoft 365", on_click=st.login, type="primary")
+    st.stop()
+
 # Sidebar
 with st.sidebar:
+    signataire = contact_signataire(st.user.get('email') or st.user.get('preferred_username'), st.user.get('name', ''))
+    st.caption(f"Connecté : {signataire['name']} (signataire)")
+    st.button("Se déconnecter", on_click=st.logout)
     st.title("Consultant")
     col_nom1, col_nom2 = st.columns(2)
     with col_nom1:
@@ -1086,8 +1040,20 @@ with st.sidebar:
     st.subheader("Frais Partages & Commission")
     frais_partages_pct = st.number_input("Frais partages (%)", value=0.0, step=0.5, min_value=0.0,
                                           help="Frais de gestion partages avec le client")
-    commission_mode = st.radio("Commission apporteur", ["Aucune", "Pourcentage", "Montant fixe"], horizontal=True)
+    # Taux et montant S+PS lies : le taux fait foi, le montant suit le CA
     _ca_preview = tjm * days_worked_month
+    st.session_state.setdefault("sps_taux", 0.0)
+    st.session_state["sps_montant"] = round(_ca_preview * st.session_state.sps_taux / 100.0, 2)
+
+    def _sps_taux_depuis_montant():
+        if _ca_preview > 0:
+            st.session_state.sps_taux = min(st.session_state.sps_montant / _ca_preview * 100.0, 100.0)
+
+    taux_charges_sps = st.number_input("Taux Charges S+PS (%)", key="sps_taux", step=0.0001, format="%.4f", min_value=0.0, max_value=100.0,
+                                       help="Charges S+PS = Taux x Chiffre d'affaires, deduites du montant disponible")
+    st.number_input("Charges S+PS (EUR)", key="sps_montant", step=10.0, min_value=0.0, disabled=_ca_preview <= 0,
+                    on_change=_sps_taux_depuis_montant, help="Saisir un montant recalcule le taux")
+    commission_mode = st.radio("Commission apporteur", ["Aucune", "Pourcentage", "Montant fixe"], horizontal=True)
     if commission_mode == "Pourcentage":
         commission_pct = st.number_input("Commission (%)", value=0.0, step=0.5, min_value=0.0)
         commission_apporteur = round(_ca_preview * commission_pct / 100.0, 2)
@@ -1112,9 +1078,6 @@ with st.sidebar:
     effectif_sup_50 = st.checkbox("Entreprise >= 50 salaries", value=False,
                                    help="FNAL 0.50% si >= 50 sal. / 0.10% si < 50 sal.")
 
-    st.markdown("---")
-    st.subheader("Commercial")
-    membre_bu = st.selectbox("Membre BU", MEMBRES_BU)
 
 # --- CALCUL AVANT AFFICHAGE ---
 results = calculate_salary(tjm, days_worked_month, days_worked_week,
@@ -1123,13 +1086,18 @@ results = calculate_salary(tjm, days_worked_month, days_worked_week,
                            effectif_sup_50, frais_partages_pct, commission_apporteur,
                            type_contrat, provision_cp, nb_journees, nb_jours_ouvres,
                            mois_num=mois_num,
-                           is_temps_partiel=(temps_travail == "Partiel"))
+                           is_temps_partiel=(temps_travail == "Partiel"),
+                           taux_charges_sps=taux_charges_sps)
 
 # Main : Onglets
 tab_simu, tab_config, tab_comm = st.tabs(["Resultats Simulation", "Configuration Globale", "Email & Explications"])
 
 with tab_simu:
     st.title("Simulateur de Portage Salarial 2026")
+
+    if results['cout_global'] > results['montant_disponible'] + 0.01:
+        st.error(f"Budget insuffisant : le coût global ({results['cout_global']:,.2f} EUR) dépasse le montant "
+                 f"disponible ({results['montant_disponible']:,.2f} EUR). Vérifiez le TJM, les jours et les déductions.")
 
     # --- KPIs principaux ---
     kpi1, kpi2, kpi3, kpi4 = st.columns(4)
@@ -1140,7 +1108,7 @@ with tab_simu:
     with kpi3:
         st.metric("Cout Global", f"{results['cout_global']:,.2f} EUR")
     with kpi4:
-        st.metric("Net a payer avant impot", f"{results['net_payable']:,.2f} EUR")
+        st.metric("Net à payer avant impôt (frais inclus)", f"{results['net_payable']:,.2f} EUR")
 
     # --- Sous-metriques ---
     sm1, sm2, sm3, sm4, sm5 = st.columns(5)
@@ -1336,14 +1304,14 @@ with tab_simu:
         st.info(f"**Taux CA → Net : {taux_ca_net:.1f}%**")
 
         # Calcul des parts pour le camembert
-        frais_gestion_total = results['management_fees'] + results['frais_intermediation'] + results.get('frais_partages', 0) + results.get('commission_apporteur', 0)
+        frais_gestion_total = results['total_deductions']
         cotis_sociales = (results['cotis_total_pat'] + results['cotis_total_sal']
                           + results['forfait_social'] - results['reduction_rgdu']
                           + results['mutuelle_part_pat'] + results['mutuelle_part_sal']
                           + results['tr_part_pat'] + results['tr_part_sal'])
         provision_viz = results['provision_reserve_financiere'] if not results['reserve_reintegree'] else 0
 
-        labels = ['Net à payer', 'Frais de gestion', 'Cotisations Sociales & Patronales', 'Provision Réserve']
+        labels = ['Net à payer', 'Frais de gestion', 'Charges patronales et salariales', 'Provision Réserve']
         values = [results['net_payable'], frais_gestion_total, cotis_sociales, provision_viz]
         colors = ['#4A90D9', '#9E9E9E', '#E91E63', '#F48FB1']
 
@@ -1363,7 +1331,7 @@ with tab_simu:
         st.plotly_chart(fig, use_container_width=True)
 
         st.markdown("### Export")
-        pdf_bytes = create_pdf(results, consultant_name, membre_bu)
+        pdf_bytes = create_pdf(results, consultant_name, signataire)
         b64 = base64.b64encode(pdf_bytes).decode()
         href = (
             f'<a href="data:application/octet-stream;base64,{b64}" download="{consultant_nom}_{consultant_prenom}_SimulationPortageSigne+.pdf" style="text-decoration:none;">'
@@ -1503,6 +1471,12 @@ with tab_comm:
         txt_deductions = f"- Frais de gestion ({st.session_state.cfg_frais_gestion}%) : **{results['management_fees']:,.2f} EUR**"
         if results['frais_intermediation'] > 0:
             txt_deductions += f"\n- Frais d'intermediation ({frais_intermediation_pct}%) : **{results['frais_intermediation']:,.2f} EUR**"
+        if results['frais_partages'] > 0:
+            txt_deductions += f"\n- Frais partages ({frais_partages_pct}%) : **{results['frais_partages']:,.2f} EUR**"
+        if results['commission_apporteur'] > 0:
+            txt_deductions += f"\n- Commission apporteur d'affaires : **{results['commission_apporteur']:,.2f} EUR**"
+        if results['charges_sps'] > 0:
+            txt_deductions += f"\n- Charges S+PS ({taux_charges_sps:.4f}%) : **{results['charges_sps']:,.2f} EUR**"
         txt_deductions += f"\n\n= **Montant Disponible : {results['montant_disponible']:,.2f} EUR**"
         st.markdown(txt_deductions)
 
@@ -1666,12 +1640,14 @@ with tab_comm:
         # Frais de gestion + partages
         txt_gestion = f"Nos frais de gestion de {st.session_state.cfg_frais_gestion}%"
         if frais_partages_pct > 0:
-            txt_gestion += f" + frais partages de {frais_partages_pct}%"
+            txt_gestion += f" + frais partagés de {frais_partages_pct}%"
+        if results['charges_sps'] > 0:
+            txt_gestion += f" + charges S+PS de {taux_charges_sps:.4f}% ({results['charges_sps']:,.2f} EUR)"
 
         # CP
-        txt_cp = "Versement de l'indemnite conges payes tous les mois"
+        txt_cp = "Versement de l'indemnité congés payés tous les mois"
         if provision_cp:
-            txt_cp = "Provisionnement de l'indemnite conges payes"
+            txt_cp = "Provisionnement de l'indemnité congés payés"
 
         # TR
         txt_tr_mail = ""
@@ -1687,56 +1663,61 @@ with tab_comm:
             if results['igd_amount'] > 0:
                 details.append(f"IGD : {results['igd_amount']:,.2f} EUR")
             if results.get('forfait_teletravail', 0) > 0:
-                details.append(f"Teletravail : {results['forfait_teletravail']:,.2f} EUR")
+                details.append(f"Télétravail : {results['forfait_teletravail']:,.2f} EUR")
             if results['other_expenses'] > 0:
                 details.append(f"Autres : {results['other_expenses']:,.2f} EUR")
-            txt_frais_mail = f"\n- J'ai integre {results['total_frais_rembourses']:,.2f} EUR de frais mensuels ({', '.join(details)})"
+            txt_frais_mail = f"\n- J'ai intégré {results['total_frais_rembourses']:,.2f} EUR de frais mensuels ({', '.join(details)})"
 
         # Reserve
         txt_reserve_mail = ""
         label_res = results['label_reserve']
-        if not results['reserve_reintegree'] and results['reserve_brute'] > 0:
-            txt_reserve_mail = f"\n\nA noter que la {label_res}* de {results['reserve_brute']:,.2f} EUR brut, sera provisionnee tous les mois.\n\n(*) {label_res.capitalize()} : equivalente a 10% du salaire de base mensuel, ce montant mis en reserve chaque mois est une obligation legale conventionnelle prevue pour vous permettre lors de vos intermissions de faire face a vos eventuels frais de prospection voire a financer votre indemnite de rupture conventionnelle. Dans tous les cas, cette reserve vous appartient : son solde vous est communiquee par Compte d'Activite etabli par nos soins, et vous est reverse en fin de contrat de travail (solde de tout compte)."
+        if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
+            txt_reserve_mail = f"\n\nÀ noter que la {label_res}* de {results['provision_reserve_financiere']:,.2f} EUR sera provisionnée tous les mois (montant chargé).\n\n(*) {label_res} : {texte_reserve(results['type_contrat'])}"
 
         # Mutuelle
         txt_mutuelle_mail = ""
         if use_mutuelle:
-            txt_mutuelle_mail = "\nVous trouverez egalement en piece jointe le dossier relatif a la mutuelle proposee, prise en charge a 50% dans la simulation presentee."
+            txt_mutuelle_mail = "\nVous trouverez également en pièce jointe le dossier relatif à la mutuelle proposée, prise en charge à 50% dans la simulation présentée."
+
+        # Signature (depuis le contact selectionne)
+        _c = signataire
+        _sig_tel = _c['phone'] + (f" · Mob. {_c['mobile']}" if _c['mobile'] else "")
+        signature = "\n".join(l for l in (_c['name'], _c['title'], "Signe+ Portage Salarial", f"Tél. {_sig_tel}", _c['email']) if l)
 
         email_content = f"""Objet : Votre simulation de revenus avec Signe+ portage salarial
 
 Bonjour {consultant_name},
 
-Je vous remercie pour la qualite de nos echanges et pour le temps que vous m'avez accorde.
+Je vous remercie pour la qualité de nos échanges et pour le temps que vous m'avez accordé.
 
-Comme convenu, vous trouverez ci-dessous la simulation de revenus etablie sur la base des elements que nous avons valides ensemble :
+Comme convenu, vous trouverez ci-dessous la simulation de revenus établie sur la base des éléments que nous avons validés ensemble :
 
-- {txt_temps}, soit une moyenne de {days_worked_month} jours produits/factures/mois
+- {txt_temps}, soit une moyenne de {days_worked_month} jours produits/facturés/mois
 - Votre TJM de {tjm} EUR HT
 - {txt_gestion}
 - {txt_cp}{txt_tr_mail}{txt_frais_mail}
 
-Votre salaire net avant impot s'eleve a : {results['net_payable']:,.2f} EUR
+Votre net à payer avant impôt (frais inclus) s'élève à : {results['net_payable']:,.2f} EUR
 
-Detail du calcul :
+Détail du calcul :
 - Salaire de base : {results['base_salary']:,.2f} EUR
 - Prime d'apport d'affaires : {results['prime_apport']:,.2f} EUR
-- Complement de remuneration : {results['complement_remuneration']:,.2f} EUR
-- Complement apport d'affaires : {results['complement_apport_affaires']:,.2f} EUR
-- Indemnite conges payes : {results['indemnite_cp']:,.2f} EUR
+- Complément de rémunération : {results['complement_remuneration']:,.2f} EUR
+- Complément apport d'affaires : {results['complement_apport_affaires']:,.2f} EUR
+- Indemnité congés payés : {results['indemnite_cp']:,.2f} EUR
 = Salaire brut total : {results['gross_salary']:,.2f} EUR
 
 - Charges salariales : {results['employee_charges']:,.2f} EUR
 - Charges patronales : {results['employer_charges']:,.2f} EUR
-= Net avant impot : {results['net_before_tax']:,.2f} EUR
+= Net avant impôt : {results['net_before_tax']:,.2f} EUR
 {txt_reserve_mail}{txt_mutuelle_mail}
 
-Je reste naturellement a votre disposition pour affiner certains parametres ou repondre a toute question complementaire.
+Je reste naturellement à votre disposition pour affiner certains paramètres ou répondre à toute question complémentaire.
 
-Au plaisir de poursuivre nos echanges,
+Au plaisir de poursuivre nos échanges,
 
 Bien cordialement,
 
-{membre_bu}"""
+{signature}"""
 
         st.text_area("Sujet & Corps du message", email_content, height=600)

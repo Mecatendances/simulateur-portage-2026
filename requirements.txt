@@ -5,4 +5,4 @@ fpdf
 openpyxl
 matplotlib
 weasyprint
-Authlib>=1.3.2,<1.7  # 1.7+ casse st.login de Streamlit 1.50 (session None)
+Authlib==1.6.5  # 1.6.6+ casse st.login de Streamlit 1.50 (erreur 400 NoneType)

@@ -9,3 +9,5 @@ analyze_excel_deep.py
 *:Zone.Identifier
 .claude/
 .gstack/
+data/
+*.sqlite3*

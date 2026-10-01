@@ -5,6 +5,15 @@ import base64
 import requests
 import tempfile
 import os
+import hashlib
+import json
+import logging
+import re
+import sqlite3
+from html import escape
+from uuid import uuid4
+from urllib.parse import quote
+import dossiers
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -56,7 +65,7 @@ TEL_STANDARD = "01 85 53 47 00"
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fiche_entra(email):
+def fiche_entra(identifiant):
     """Nom, fonction et mobile depuis Microsoft Graph ; {} si Graph est indisponible."""
     try:
         auth = st.secrets["auth"]
@@ -65,7 +74,8 @@ def fiche_entra(email):
             "grant_type": "client_credentials", "client_id": auth["client_id"],
             "client_secret": auth["client_secret"], "scope": "https://graph.microsoft.com/.default",
         }).json()["access_token"]
-        r = requests.get(f"https://graph.microsoft.com/v1.0/users/{email}?$select=displayName,jobTitle,mobilePhone",
+        r = requests.get(f"https://graph.microsoft.com/v1.0/users/{quote(identifiant, safe='')}",
+                         params={"$select": "displayName,jobTitle,mobilePhone,businessPhones,companyName,department,officeLocation"},
                          headers={"Authorization": f"Bearer {tok}"}, timeout=10)
         r.raise_for_status()
         return r.json()
@@ -73,11 +83,14 @@ def fiche_entra(email):
         return {}
 
 
-def contact_signataire(email, nom=""):
+def contact_signataire(email, nom="", oid=""):
     email = (email or "").lower()
-    f = fiche_entra(email) if email else {}
+    f = fiche_entra(oid or email) if oid or email else {}
     return {"name": f.get("displayName") or nom or email, "title": f.get("jobTitle") or "",
-            "mobile": f.get("mobilePhone") or "", "email": email, "phone": TEL_STANDARD}
+            "mobile": f.get("mobilePhone") or "", "email": email,
+            "phone": (f.get("businessPhones") or [TEL_STANDARD])[0],
+            "company": f.get("companyName") or "", "department": f.get("department") or "",
+            "office": f.get("officeLocation") or ""}
 
 
 # Texte legal de la reserve (PDF + email), selon le type de contrat
@@ -764,7 +777,7 @@ def create_pdf(data, name, signataire):
 
     # Template
     with open(_TEMPLATE_PATH, 'r', encoding='utf-8') as f:
-        tpl = Template(f.read())
+        tpl = Template(f.read(), autoescape=True)
 
     html_str = tpl.render(
         logo_path=LOGO_BLEU_PATH if os.path.exists(LOGO_BLEU_PATH) else (LOGO_PATH if os.path.exists(LOGO_PATH) else ""),
@@ -863,412 +876,575 @@ if not st.user.is_logged_in:
     page_connexion()
     st.stop()
 
-# Sidebar
-with st.sidebar:
-    signataire = contact_signataire(st.user.get('email') or st.user.get('preferred_username'), st.user.get('name', ''))
-    st.caption(f"Connecté : {signataire['name']} (signataire)")
-    st.button("Se déconnecter", on_click=st.logout)
-    st.title("Consultant")
-    col_nom1, col_nom2 = st.columns(2)
-    with col_nom1:
-        consultant_prenom = st.text_input("Prénom", "")
-    with col_nom2:
-        consultant_nom = st.text_input("Nom", "")
-    consultant_name = f"{consultant_prenom} {consultant_nom}".strip() or "Consultant"
+try:
+    proprietaire = dossiers.identite(st.user)
+except ValueError as exc:
+    st.error(str(exc))
+    st.button("Se reconnecter", on_click=st.logout)
+    st.stop()
 
-    consultant_email = st.text_input("Email", "", placeholder="prenom.nom@email.com")
-    consultant_statut = st.selectbox("Statut", ["Prospect", "En cours de négociation", "Signé"])
+if st.session_state.get("_dossier_proprietaire", proprietaire) != proprietaire:
+    st.session_state.clear()
+    st.rerun()
+st.session_state["_dossier_proprietaire"] = proprietaire
+st.session_state.setdefault("_dossier_id", uuid4().hex)
+st.session_state.setdefault("_dossier_revision", 0)
+# Conserver aussi les saisies des champs conditionnels (moto, commission, temps partiel).
+for key, value in dossiers.parametres(st.session_state).items():
+    st.session_state[key] = value
 
-    st.markdown("---")
-    tjm = st.number_input("TJM (EUR)", min_value=0, value=500, step=10)
-    frais_intermediation_pct = st.number_input("Frais d'intermediation (%)", value=0.0, step=0.5, min_value=0.0)
 
-    st.markdown("---")
-    st.subheader("Temps de Travail")
-    type_contrat = st.radio("Type de contrat", ["CDI", "CDD"], horizontal=True)
-    temps_travail = st.radio("Temps de travail", ["Complet", "Partiel"], horizontal=True)
+def dossier_modifie():
+    baseline = st.session_state.get("_dossier_baseline")
+    return baseline is not None and dossiers.parametres(st.session_state) != baseline
 
-    # Mois et jours ouvres
-    col_m1, col_m2 = st.columns(2)
-    with col_m1:
-        mois_options = [f"{MOIS_LABELS[m]} 2026" for m in range(1, 13)]
-        mois_selectionne = st.selectbox("Mois", mois_options, index=2)  # Mars par defaut
-        mois_num = mois_options.index(mois_selectionne) + 1
-    with col_m2:
-        jours_ouvres_defaut = JOURS_OUVRES_2026.get(mois_num, 22)
-        nb_jours_ouvres = st.number_input("Jours ouvrés du mois", value=jours_ouvres_defaut,
-                                           step=1, min_value=1, max_value=31)
 
-    col_j1, col_j2 = st.columns(2)
-    with col_j1:
-        nb_journees = st.number_input("Nb Journées", value=min(19, nb_jours_ouvres), step=1, min_value=0)
-    with col_j2:
-        nb_demi_journees = st.number_input("Nb Demi-journées", value=0, step=1, min_value=0)
-    days_worked_month = nb_journees + nb_demi_journees * 0.5
-    st.caption(f"Jours produits : **{days_worked_month}** / {nb_jours_ouvres} ouvrés")
-    st.caption(f"Base proratisée : 2 374 × {nb_journees}/{nb_jours_ouvres} = **{2374 * nb_journees / nb_jours_ouvres:,.2f} €**")
+def changer_dossier(dossier_id=None):
+    try:
+        dossier = dossiers.ouvrir(dossiers.identite(st.user), dossier_id) if dossier_id else None
+        if dossier and dossier["donnees"].get("format") != 1:
+            raise ValueError("Ce dossier nécessite une version plus récente de l'application.")
+        valeurs = dossier["donnees"]["parametres"] if dossier else {}
+        if not isinstance(valeurs, dict):
+            raise ValueError("Paramètres du dossier invalides.")
+    except (OSError, sqlite3.Error, ValueError, KeyError):
+        logging.exception("Ouverture du dossier impossible")
+        st.session_state["_dossier_erreur"] = "Impossible d'ouvrir ce dossier. Vos saisies sont conservées."
+        return
+    dossiers.restaurer(st.session_state, valeurs)
+    for key in list(st.session_state):
+        if key.startswith("_dossier_") and key != "_dossier_proprietaire":
+            del st.session_state[key]
+    st.session_state["_dossier_id"] = dossier_id or uuid4().hex
+    st.session_state["_dossier_revision"] = dossier["revision"] if dossier else 0
+    if dossier:
+        st.session_state["_dossier_baseline"] = valeurs
+        st.session_state["_dossier_pdf"] = dossier["pdf"]
+        st.session_state["_dossier_nom_pdf"] = dossier["nom_pdf"]
+    st.session_state["_retour_simulateur"] = True
 
-    if temps_travail == "Partiel":
-        days_worked_week = st.number_input("Jours / Sem", value=2.5, max_value=5.0, step=0.5)
+
+def demander_dossier(dossier_id=None):
+    if dossier_modifie():
+        st.session_state["_dossier_destination"] = dossier_id
     else:
-        days_worked_week = st.number_input("Jours / Sem", value=5.0, max_value=7.0, step=0.5)
+        changer_dossier(dossier_id)
 
-    st.markdown("---")
-    st.subheader("Indemnites Kilometriques (IK)")
 
-    type_vehicule = st.selectbox("Type de vehicule", ["Voiture Thermique", "Voiture Electrique", "Moto"])
+def enregistrer_dossier(dossier_id, revision, donnees, pdf, nom_pdf):
+    if dossiers.parametres(st.session_state) != donnees["parametres"]:
+        st.session_state["_dossier_erreur"] = (
+            "Téléchargement non enregistré : la simulation vient de changer. Le PDF reçu peut correspondre "
+            "à la version précédente. Attendez le recalcul puis téléchargez à nouveau."
+        )
+        return
+    try:
+        nom = " ".join(donnees["parametres"].get(k, "").strip()
+                       for k in ("sim_prenom", "sim_nom")).strip()
+        nouvelle_revision = dossiers.enregistrer(dossiers.identite(st.user), dossier_id, revision,
+                                                  nom, donnees, pdf, nom_pdf)
+    except ValueError as exc:
+        st.session_state["_dossier_erreur"] = str(exc)
+        return
+    except (OSError, sqlite3.Error):
+        logging.exception("Enregistrement du dossier impossible")
+        st.session_state["_dossier_erreur"] = "Dossier non enregistré : stockage indisponible. Vos saisies sont conservées ; réessayez."
+        return
+    st.session_state["_dossier_revision"] = nouvelle_revision
+    st.session_state["_dossier_baseline"] = donnees["parametres"]
+    st.session_state["_dossier_pdf"] = pdf
+    st.session_state["_dossier_nom_pdf"] = nom_pdf
+    st.session_state.pop("_dossier_erreur", None)
+    st.session_state.pop("_dossier_destination", None)
+    st.toast("Dossier enregistré", icon="✅")
 
-    is_electrique = (type_vehicule == "Voiture Electrique")
 
-    if type_vehicule in ("Voiture Thermique", "Voiture Electrique"):
-        cv_options = [3, 4, 5, 6, 7]
-        cv_fiscaux = st.selectbox("Chevaux fiscaux (CV)", cv_options, index=2)
-        tranche_km = st.selectbox("Tranche kilometrique annuelle",
-                                  ["Jusqu'a 5 000 km", "De 5 001 a 20 000 km", "Au-dela de 20 000 km"])
-        if tranche_km == "Jusqu'a 5 000 km":
-            ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["jusqua_5000"]
-        elif tranche_km == "De 5 001 a 20 000 km":
-            ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["de_5001_a_20000"]
-        else:
-            ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["au_dela_20000"]
-    else:
-        cv_options_moto = [1, 2, 3, 4, 5]
-        cv_fiscaux = st.selectbox("Chevaux fiscaux (CV)", cv_options_moto, index=2)
-        tranche_km = st.selectbox("Tranche kilometrique annuelle",
-                                  ["Jusqu'a 3 000 km", "De 3 001 a 6 000 km", "Au-dela de 6 000 km"])
-        if tranche_km == "Jusqu'a 3 000 km":
-            ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["jusqua_3000"]
-        elif tranche_km == "De 3 001 a 6 000 km":
-            ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["de_3001_a_6000"]
-        else:
-            ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["au_dela_6000"]
+def changer_mois():
+    mois = [f"{MOIS_LABELS[m]} 2026" for m in range(1, 13)].index(st.session_state.sim_mois) + 1
+    st.session_state.sim_jours_ouvres = JOURS_OUVRES_2026[mois]
+    st.session_state.sim_journees = min(st.session_state.get("sim_journees", 19), JOURS_OUVRES_2026[mois])
 
-    # Majoration 20% vehicule electrique
-    ik_rate_display = ik_rate_base
-    if is_electrique:
-        st.info(f"Bareme standard : {ik_rate_base:.3f} EUR/km | **Majoration electrique +20%**")
-    else:
-        st.info(f"Taux IK : **{ik_rate_display:.3f} EUR/km**")
-    st.session_state.cfg_ik_rate = ik_rate_display
 
-    # --- Calcul km via adresse (avec autocomplétion) ---
-    with st.expander("Calculer les km par adresse", expanded=False):
+def afficher_alertes_dossier():
+    if "_dossier_erreur" in st.session_state:
+        st.error(st.session_state["_dossier_erreur"])
+    if "_dossier_destination" in st.session_state:
+        st.warning("La simulation contient des modifications non enregistrées. Enregistrez-les dans le simulateur avant de changer de dossier, ou abandonnez-les.")
+        continuer, rester = st.columns(2)
+        continuer.button("Abandonner et continuer", key="confirmer_changement_dossier", on_click=changer_dossier,
+                         args=(st.session_state["_dossier_destination"],), use_container_width=True)
+        rester.button("Conserver ma simulation", on_click=lambda: st.session_state.pop("_dossier_destination", None),
+                      use_container_width=True)
 
-        # Adresse domicile avec autocomplétion
-        saisie_dom = st.text_input("Rechercher adresse domicile", "",
-                                    key="saisie_dom", placeholder="Tapez une adresse...")
-        if saisie_dom and len(saisie_dom) >= 5:
-            suggestions_dom = geocoder_adresse(saisie_dom)
-            if suggestions_dom:
-                options_dom = [s['label'] for s in suggestions_dom]
-                choix_dom = st.selectbox("Sélectionner", options_dom, key="sel_dom")
-                idx_dom = options_dom.index(choix_dom)
-                st.session_state['geo_dom'] = suggestions_dom[idx_dom]
+
+def afficher_profil():
+    with st.container(key="page_profil"):
+        if st.button("Retour au simulateur", icon=":material/arrow_back:", type="tertiary", key="retour_simulateur"):
+            st.switch_page(page_simulation)
+        st.title("Mon profil")
+        st.caption("Vos coordonnées et vos dossiers en cours.")
+        afficher_alertes_dossier()
+        fiche, dossiers_col = st.columns([1, 2], gap="large")
+        with fiche, st.container(border=True, key="identite_profil"):
+            initiales = "".join(mot[0] for mot in signataire["name"].split()[:2]).upper() or "S+"
+            st.markdown(f'''<div class="profil-identite">
+<span class="profil-avatar" aria-hidden="true">{escape(initiales)}</span>
+<div><h2>{escape(signataire["name"])}</h2><p>{escape(signataire["title"])}</p></div></div>''', unsafe_allow_html=True)
+            champs = [("email", "Email", True), ("company", "Société", True),
+                      ("department", "Service", False), ("office", "Bureau", False),
+                      ("phone", "Téléphone", False), ("mobile", "Mobile", False)]
+            coordonnees = "".join(
+                f'<div class="{"profil-large" if large else ""}"><dt>{libelle}</dt><dd>{escape(signataire[champ])}</dd></div>'
+                for champ, libelle, large in champs if signataire.get(champ))
+            st.markdown(f'<dl class="profil-coordonnees">{coordonnees}</dl>', unsafe_allow_html=True)
+            st.button("Se déconnecter", icon=":material/logout:", type="tertiary", on_click=st.logout)
+
+        with dossiers_col, st.container(border=True, key="dossiers_personnels"):
+            titre, action = st.columns([2, 1], vertical_alignment="center")
+            titre.subheader("Mes dossiers en cours")
+            action.button("Nouveau dossier", icon=":material/add:", key="nouveau_dossier_profil",
+                          on_click=demander_dossier, use_container_width=True)
+            try:
+                mes_dossiers = dossiers.lister(dossiers.identite(st.user))
+            except (OSError, sqlite3.Error):
+                logging.exception("Liste des dossiers indisponible")
+                st.error("Les dossiers sont temporairement indisponibles. Vos saisies restent disponibles.")
+                return
+            if mes_dossiers:
+                st.caption(f"{len(mes_dossiers)} dossier{'s' if len(mes_dossiers) > 1 else ''} · Reprenez une simulation à tout moment.")
+                for dossier in mes_dossiers:
+                    with st.container(key=f"dossier_ligne_{dossier['id']}"):
+                        nom, ouvrir = st.columns([3, 1], vertical_alignment="center")
+                        date = "/".join(reversed(dossier["modifie_le"][:10].split("-")))
+                        nom.markdown(f'''<div class="dossier-resume"><span class="dossier-statut">En cours</span>
+<h3>{escape(dossier["consultant"])}</h3><p>Modifié le {escape(date)}</p></div>''', unsafe_allow_html=True)
+                        ouvrir.button("Reprendre", icon=":material/arrow_forward:", key=f"ouvrir_{dossier['id']}",
+                                      on_click=demander_dossier, args=(dossier["id"],), use_container_width=True)
             else:
-                st.caption("Aucune adresse trouvée")
+                st.markdown('''<div class="dossiers-vides"><span aria-hidden="true">＋</span>
+<h3>Aucun dossier enregistré</h3><p>Enregistrez ou téléchargez un PDF depuis le simulateur.<br>Votre dossier vous attendra ici.</p></div>''', unsafe_allow_html=True)
 
-        # Adresse mission avec autocomplétion
-        saisie_mis = st.text_input("Rechercher adresse mission", "",
-                                    key="saisie_mis", placeholder="Tapez une adresse...")
-        if saisie_mis and len(saisie_mis) >= 5:
-            suggestions_mis = geocoder_adresse(saisie_mis)
-            if suggestions_mis:
-                options_mis = [s['label'] for s in suggestions_mis]
-                choix_mis = st.selectbox("Sélectionner", options_mis, key="sel_mis")
-                idx_mis = options_mis.index(choix_mis)
-                st.session_state['geo_mis'] = suggestions_mis[idx_mis]
+
+def afficher_simulateur():
+    # Sidebar
+    with st.sidebar:
+        st.button("Nouveau dossier", key="nouveau_dossier", on_click=demander_dossier, use_container_width=True)
+        st.title("Consultant")
+        col_nom1, col_nom2 = st.columns(2)
+        with col_nom1:
+            consultant_prenom = st.text_input("Prénom", "", key="sim_prenom", max_chars=200)
+        with col_nom2:
+            consultant_nom = st.text_input("Nom", "", key="sim_nom", max_chars=200)
+        consultant_name = f"{consultant_prenom} {consultant_nom}".strip() or "Consultant"
+
+        consultant_email = st.text_input("Email", "", placeholder="prenom.nom@email.com", key="sim_email", max_chars=200)
+        consultant_statut = st.selectbox("Statut", ["Prospect", "En cours de négociation", "Signé"], key="sim_statut")
+
+        st.markdown("---")
+        tjm = st.number_input("TJM (EUR)", min_value=0, value=500, step=10, key="sim_tjm")
+        frais_intermediation_pct = st.number_input("Frais d'intermediation (%)", value=0.0, step=0.5, min_value=0.0, key="sim_intermediation")
+
+        st.markdown("---")
+        st.subheader("Temps de Travail")
+        type_contrat = st.radio("Type de contrat", ["CDI", "CDD"], horizontal=True, key="sim_contrat")
+        temps_travail = st.radio("Temps de travail", ["Complet", "Partiel"], horizontal=True, key="sim_temps_travail")
+
+        # Mois et jours ouvres
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            mois_options = [f"{MOIS_LABELS[m]} 2026" for m in range(1, 13)]
+            mois_selectionne = st.selectbox("Mois", mois_options, index=2, key="sim_mois", on_change=changer_mois)  # Mars par defaut
+            mois_num = mois_options.index(mois_selectionne) + 1
+        with col_m2:
+            jours_ouvres_defaut = JOURS_OUVRES_2026.get(mois_num, 22)
+            nb_jours_ouvres = st.number_input("Jours ouvrés du mois", value=22,
+                                               step=1, min_value=1, max_value=31, key="sim_jours_ouvres")
+
+        col_j1, col_j2 = st.columns(2)
+        with col_j1:
+            nb_journees = st.number_input("Nb Journées", value=19, step=1, min_value=0, key="sim_journees")
+        with col_j2:
+            nb_demi_journees = st.number_input("Nb Demi-journées", value=0, step=1, min_value=0, key="sim_demi_journees")
+        days_worked_month = nb_journees + nb_demi_journees * 0.5
+        st.caption(f"Jours produits : **{days_worked_month}** / {nb_jours_ouvres} ouvrés")
+        st.caption(f"Base proratisée : 2 374 × {nb_journees}/{nb_jours_ouvres} = **{2374 * nb_journees / nb_jours_ouvres:,.2f} €**")
+
+        if temps_travail == "Partiel":
+            days_worked_week = st.number_input("Jours / Sem", value=2.5, max_value=5.0, step=0.5, key="sim_jours_semaine_partiel")
+        else:
+            days_worked_week = st.number_input("Jours / Sem", value=5.0, max_value=7.0, step=0.5, key="sim_jours_semaine_complet")
+
+        st.markdown("---")
+        st.subheader("Indemnites Kilometriques (IK)")
+
+        type_vehicule = st.selectbox("Type de vehicule", ["Voiture Thermique", "Voiture Electrique", "Moto"], key="sim_vehicule")
+
+        is_electrique = (type_vehicule == "Voiture Electrique")
+
+        if type_vehicule in ("Voiture Thermique", "Voiture Electrique"):
+            cv_options = [3, 4, 5, 6, 7]
+            cv_fiscaux = st.selectbox("Chevaux fiscaux (CV)", cv_options, index=2, key="sim_cv_voiture")
+            tranche_km = st.selectbox("Tranche kilometrique annuelle",
+                                      ["Jusqu'a 5 000 km", "De 5 001 a 20 000 km", "Au-dela de 20 000 km"], key="sim_tranche_voiture")
+            if tranche_km == "Jusqu'a 5 000 km":
+                ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["jusqua_5000"]
+            elif tranche_km == "De 5 001 a 20 000 km":
+                ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["de_5001_a_20000"]
             else:
-                st.caption("Aucune adresse trouvée")
+                ik_rate_base = BAREME_IK_VOITURE_2026[cv_fiscaux]["au_dela_20000"]
+        else:
+            cv_options_moto = [1, 2, 3, 4, 5]
+            cv_fiscaux = st.selectbox("Chevaux fiscaux (CV)", cv_options_moto, index=2, key="sim_cv_moto")
+            tranche_km = st.selectbox("Tranche kilometrique annuelle",
+                                      ["Jusqu'a 3 000 km", "De 3 001 a 6 000 km", "Au-dela de 6 000 km"], key="sim_tranche_moto")
+            if tranche_km == "Jusqu'a 3 000 km":
+                ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["jusqua_3000"]
+            elif tranche_km == "De 3 001 a 6 000 km":
+                ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["de_3001_a_6000"]
+            else:
+                ik_rate_base = BAREME_IK_MOTO_2026[cv_fiscaux]["au_dela_6000"]
 
-        # Bouton calcul
-        dom_ok = 'geo_dom' in st.session_state and st.session_state['geo_dom']
-        mis_ok = 'geo_mis' in st.session_state and st.session_state['geo_mis']
+        # Majoration 20% vehicule electrique
+        ik_rate_display = ik_rate_base
+        if is_electrique:
+            st.info(f"Bareme standard : {ik_rate_base:.3f} EUR/km | **Majoration electrique +20%**")
+        else:
+            st.info(f"Taux IK : **{ik_rate_display:.3f} EUR/km**")
+        st.session_state.cfg_ik_rate = ik_rate_display
 
-        if dom_ok and mis_ok:
-            st.caption(f"📍 {st.session_state['geo_dom']['label']}")
-            st.caption(f"🏢 {st.session_state['geo_mis']['label']}")
+        # --- Calcul km via adresse (avec autocomplétion) ---
+        with st.expander("Calculer les km par adresse", expanded=False):
 
-            if st.button("Calculer le trajet", key="btn_calc_km"):
-                dom = st.session_state['geo_dom']
-                mis = st.session_state['geo_mis']
-                with st.spinner("Calcul de l'itinéraire..."):
-                    route = calculer_distance_osrm(dom['lat'], dom['lon'], mis['lat'], mis['lon'])
-                if route:
-                    km_aller = route['distance_km']
-                    km_ar = round(km_aller * 2, 1)
-                    st.session_state['ik_km_calcule'] = km_ar
-                    st.session_state['ik_km_aller'] = km_aller
-                    st.session_state['ik_duree'] = route['duree_min']
+            # Adresse domicile avec autocomplétion
+            saisie_dom = st.text_input("Rechercher adresse domicile", "",
+                                        key="saisie_dom", placeholder="Tapez une adresse...")
+            if saisie_dom and len(saisie_dom) >= 5:
+                suggestions_dom = geocoder_adresse(saisie_dom)
+                if suggestions_dom:
+                    options_dom = [s['label'] for s in suggestions_dom]
+                    choix_dom = st.selectbox("Sélectionner", options_dom, key="sel_dom")
+                    idx_dom = options_dom.index(choix_dom)
+                    st.session_state['geo_dom'] = suggestions_dom[idx_dom]
                 else:
-                    st.error("Impossible de calculer l'itinéraire")
+                    st.caption("Aucune adresse trouvée")
 
-        if 'ik_km_calcule' in st.session_state and st.session_state['ik_km_calcule'] > 0:
-            st.success(f"**{st.session_state['ik_km_aller']} km** aller | **{st.session_state['ik_km_calcule']} km AR** | ~{st.session_state['ik_duree']:.0f} min")
+            # Adresse mission avec autocomplétion
+            saisie_mis = st.text_input("Rechercher adresse mission", "",
+                                        key="saisie_mis", placeholder="Tapez une adresse...")
+            if saisie_mis and len(saisie_mis) >= 5:
+                suggestions_mis = geocoder_adresse(saisie_mis)
+                if suggestions_mis:
+                    options_mis = [s['label'] for s in suggestions_mis]
+                    choix_mis = st.selectbox("Sélectionner", options_mis, key="sel_mis")
+                    idx_mis = options_mis.index(choix_mis)
+                    st.session_state['geo_mis'] = suggestions_mis[idx_mis]
+                else:
+                    st.caption("Aucune adresse trouvée")
 
-    # Km mensuel
-    km_ar_jour = st.session_state.get('ik_km_calcule', 0.0)
-    suggestion_km = km_ar_jour * days_worked_month if km_ar_jour > 0 else 0.0
-    km_mensuel = st.number_input("Nb Kilomètres ce mois", value=0.0, step=10.0)
-    if suggestion_km > 0 and km_mensuel == 0:
-        st.caption(f"Suggestion : {km_ar_jour} km/jour × {days_worked_month} jours = **{suggestion_km:.0f} km**")
+            # Bouton calcul
+            dom_ok = 'geo_dom' in st.session_state and st.session_state['geo_dom']
+            mis_ok = 'geo_mis' in st.session_state and st.session_state['geo_mis']
 
-    if is_electrique:
-        ik_total = km_mensuel * ik_rate_base * 1.20
-        st.caption(f"Total IK : {km_mensuel:.0f} x {ik_rate_base:.3f} x 1.20 = **{ik_total:,.2f} EUR**")
-    else:
-        ik_total = km_mensuel * ik_rate_display
-        st.caption(f"Total IK : **{ik_total:,.2f} EUR**")
+            if dom_ok and mis_ok:
+                st.caption(f"📍 {st.session_state['geo_dom']['label']}")
+                st.caption(f"🏢 {st.session_state['geo_mis']['label']}")
 
-    st.markdown("---")
-    st.subheader("Indemnites Grand Deplacement (IGD)")
+                if st.button("Calculer le trajet", key="btn_calc_km"):
+                    dom = st.session_state['geo_dom']
+                    mis = st.session_state['geo_mis']
+                    with st.spinner("Calcul de l'itinéraire..."):
+                        route = calculer_distance_osrm(dom['lat'], dom['lon'], mis['lat'], mis['lon'])
+                    if route:
+                        km_aller = route['distance_km']
+                        km_ar = round(km_aller * 2, 1)
+                        st.session_state['ik_km_calcule'] = km_ar
+                        st.session_state['ik_km_aller'] = km_aller
+                        st.session_state['ik_duree'] = route['duree_min']
+                    else:
+                        st.error("Impossible de calculer l'itinéraire")
 
-    duree_mission = st.selectbox("Duree de la mission",
-                                 ["Moins de 3 mois", "De 3 a 24 mois", "Au-dela de 24 mois"])
-    if duree_mission == "Moins de 3 mois":
-        igd_bareme = IGD_BAREME_2026["moins_3_mois"]
-    elif duree_mission == "De 3 a 24 mois":
-        igd_bareme = IGD_BAREME_2026["3_a_24_mois"]
-    else:
-        igd_bareme = IGD_BAREME_2026["24_a_72_mois"]
+            if 'ik_km_calcule' in st.session_state and st.session_state['ik_km_calcule'] > 0:
+                st.success(f"**{st.session_state['ik_km_aller']} km** aller | **{st.session_state['ik_km_calcule']} km AR** | ~{st.session_state['ik_duree']:.0f} min")
 
-    zone_igd = st.selectbox("Zone IGD", ["Province", "Paris/IDF"])
-    nb_repas_igd = st.number_input("Nb repas IGD", value=0, step=1, min_value=0)
-    nb_nuitees_igd = st.number_input("Nb nuitees IGD", value=0, step=1, min_value=0)
+        # Km mensuel
+        km_ar_jour = st.session_state.get('ik_km_calcule', 0.0)
+        suggestion_km = km_ar_jour * days_worked_month if km_ar_jour > 0 else 0.0
+        km_mensuel = st.number_input("Nb Kilomètres ce mois", value=0.0, step=10.0, key="sim_km")
+        if suggestion_km > 0 and km_mensuel == 0:
+            st.caption(f"Suggestion : {km_ar_jour} km/jour × {days_worked_month} jours = **{suggestion_km:.0f} km**")
 
-    igd_repas_rate = igd_bareme["repas"]
-    igd_nuitee_rate = igd_bareme["nuitee_paris"] if zone_igd == "Paris/IDF" else igd_bareme["nuitee_province"]
-    igd_total = (nb_repas_igd * igd_repas_rate) + (nb_nuitees_igd * igd_nuitee_rate)
-
-    if nb_repas_igd > 0 or nb_nuitees_igd > 0:
-        st.caption(f"Repas: {nb_repas_igd} x {igd_repas_rate:.2f} = {nb_repas_igd * igd_repas_rate:.2f} EUR")
-        st.caption(f"Nuitees: {nb_nuitees_igd} x {igd_nuitee_rate:.2f} = {nb_nuitees_igd * igd_nuitee_rate:.2f} EUR")
-        st.caption(f"**Total IGD : {igd_total:,.2f} EUR**")
-
-    st.markdown("---")
-    st.subheader("Invitation Dejeuner")
-    nb_invitation_dejeuner = st.number_input("Nb invitations dejeuner", value=0, step=1, min_value=0,
-                                              help="Repas pris en charge (pas de TR ce jour)")
-
-    st.markdown("---")
-    st.subheader("Titres Restaurant")
-    mode_tr = st.radio("Mode TR", ["Automatique", "Manuel"], horizontal=True)
-    if mode_tr == "Automatique":
-        nb_tr_auto = max(0, int(days_worked_month - nb_repas_igd - nb_invitation_dejeuner - nb_demi_journees))
-        st.info(f"TR auto = {days_worked_month:.0f}j - {nb_repas_igd} IGD - {nb_invitation_dejeuner} invit. - {nb_demi_journees} demi-j = **{nb_tr_auto}**")
-        nb_titres_restaurant = nb_tr_auto
-    else:
-        nb_titres_restaurant = st.number_input("Nb Titres Restaurant", value=0, step=1, min_value=0)
-    if nb_titres_restaurant > 0:
-        st.caption(f"Part salariale : {nb_titres_restaurant} x {TR_PART_PATRONALE_MAX:.2f} = {nb_titres_restaurant * TR_PART_PATRONALE_MAX:.2f} EUR")
-        st.caption(f"Part patronale : {nb_titres_restaurant} x {TR_PART_PATRONALE_MAX:.2f} = {nb_titres_restaurant * TR_PART_PATRONALE_MAX:.2f} EUR")
-
-    st.markdown("---")
-    st.subheader("Forfait Teletravail")
-    jours_teletravail = st.number_input("Nb jours teletravail", value=0, step=1, min_value=0, max_value=22,
-                                        help="2.70 EUR/jour, max 22 jours")
-    if jours_teletravail > 0:
-        st.caption(f"Forfait : {jours_teletravail} x 2.70 = {jours_teletravail * 2.70:.2f} EUR")
-
-    st.markdown("---")
-    st.subheader("Autres Frais")
-    montant_facture_tel = st.number_input("Facture Tel/Internet (EUR)", value=0.0, step=10.0,
-                                           help=f"Prise en charge a {st.session_state.cfg_pct_tel_internet:.0f}% (config)")
-    frais_internet = round(montant_facture_tel * (st.session_state.cfg_pct_tel_internet / 100.0), 2)
-    if montant_facture_tel > 0:
-        st.caption(f"Pris en charge : {st.session_state.cfg_pct_tel_internet:.0f}% de {montant_facture_tel:.2f} = **{frais_internet:.2f} EUR**")
-
-    montant_abonnement_transport = st.number_input("Abonnement Transport (EUR)", value=0.0, step=10.0,
-                                                     help=f"Prise en charge a {st.session_state.cfg_pct_transport:.0f}% (config)")
-    frais_transport = round(montant_abonnement_transport * (st.session_state.cfg_pct_transport / 100.0), 2)
-    if montant_abonnement_transport > 0:
-        st.caption(f"Pris en charge : {st.session_state.cfg_pct_transport:.0f}% de {montant_abonnement_transport:.2f} = **{frais_transport:.2f} EUR**")
-
-    frais_divers = st.number_input("Autres Frais (EUR)", value=0.0, step=10.0)
-    expenses_other = frais_internet + frais_transport + frais_divers
-    st.caption(f"Total Autres Frais : **{expenses_other:,.2f} EUR**")
-
-    st.markdown("---")
-    st.subheader("Frais Partages & Commission")
-    frais_partages_pct = st.number_input("Frais partages (%)", value=0.0, step=0.5, min_value=0.0,
-                                          help="Frais de gestion partages avec le client")
-    # Taux et montant S+PS lies : le taux fait foi, le montant suit le CA
-    _ca_preview = tjm * days_worked_month
-    st.session_state.setdefault("sps_taux", 0.0)
-    st.session_state["sps_montant"] = round(_ca_preview * st.session_state.sps_taux / 100.0, 2)
-
-    def _sps_taux_depuis_montant():
-        if _ca_preview > 0:
-            st.session_state.sps_taux = min(st.session_state.sps_montant / _ca_preview * 100.0, 100.0)
-
-    taux_charges_sps = st.number_input("Taux Charges S+PS (%)", key="sps_taux", step=0.0001, format="%.4f", min_value=0.0, max_value=100.0,
-                                       help="Charges S+PS = Taux x Chiffre d'affaires, deduites du montant disponible")
-    st.number_input("Charges S+PS (EUR)", key="sps_montant", step=10.0, min_value=0.0, disabled=_ca_preview <= 0,
-                    on_change=_sps_taux_depuis_montant, help="Saisir un montant recalcule le taux")
-    commission_mode = st.radio("Commission apporteur", ["Aucune", "Pourcentage", "Montant fixe"], horizontal=True)
-    if commission_mode == "Pourcentage":
-        commission_pct = st.number_input("Commission (%)", value=0.0, step=0.5, min_value=0.0)
-        commission_apporteur = round(_ca_preview * commission_pct / 100.0, 2)
-        if commission_pct > 0:
-            st.caption(f"Commission : {commission_pct}% de {_ca_preview:,.0f} = **{commission_apporteur:,.2f} EUR**")
-    elif commission_mode == "Montant fixe":
-        commission_apporteur = st.number_input("Commission (EUR)", value=0.0, step=50.0, min_value=0.0)
-    else:
-        commission_apporteur = 0.0
-
-    st.markdown("---")
-    st.subheader("Options")
-
-    label_reserve_opt = "Indemnite de precarite reintegree" if type_contrat == "CDD" else "Reserve Financiere reintegree"
-    reserve_reintegree = st.checkbox(label_reserve_opt, value=False,
-                                     help="Cochez pour reintegrer dans le brut. Decochez pour provisionner.")
-    use_reserve = not reserve_reintegree
-
-    provision_cp = st.checkbox("Provisions Conges Payes", value=False,
-                                help="Si coche, les ICP sont retirees du brut et provisionnees.")
-    use_mutuelle = st.checkbox("Mutuelle Sante", value=True)
-    effectif_sup_50 = st.checkbox("Entreprise >= 50 salaries", value=False,
-                                   help="FNAL 0.50% si >= 50 sal. / 0.10% si < 50 sal.")
-
-
-# --- CALCUL AVANT AFFICHAGE ---
-results = calculate_salary(tjm, days_worked_month, days_worked_week,
-                           ik_total, igd_total, expenses_other, use_reserve, use_mutuelle,
-                           nb_titres_restaurant, frais_intermediation_pct, jours_teletravail,
-                           effectif_sup_50, frais_partages_pct, commission_apporteur,
-                           type_contrat, provision_cp, nb_journees, nb_jours_ouvres,
-                           mois_num=mois_num,
-                           is_temps_partiel=(temps_travail == "Partiel"),
-                           taux_charges_sps=taux_charges_sps)
-
-# Main : Onglets
-tab_simu, tab_config, tab_comm = st.tabs(["Resultats Simulation", "Configuration Globale", "Email & Explications"])
-
-with tab_simu:
-    st.title("Simulateur de Portage Salarial 2026")
-
-    if results['cout_global'] > results['montant_disponible'] + 0.01:
-        st.error(f"Budget insuffisant : le coût global ({results['cout_global']:,.2f} EUR) dépasse le montant "
-                 f"disponible ({results['montant_disponible']:,.2f} EUR). Vérifiez le TJM, les jours et les déductions.")
-
-    # --- KPIs principaux ---
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    with kpi1:
-        st.metric("Chiffre d'Affaires", f"{results['turnover']:,.2f} EUR")
-    with kpi2:
-        st.metric("Salaire Brut", f"{results['gross_salary']:,.2f} EUR")
-    with kpi3:
-        st.metric("Cout Global", f"{results['cout_global']:,.2f} EUR")
-    with kpi4:
-        st.metric("Net à payer avant impôt (frais inclus)", f"{results['net_payable']:,.2f} EUR")
-
-    # --- Sous-metriques ---
-    sm1, sm2, sm3, sm4, sm5 = st.columns(5)
-    with sm1:
-        st.caption(f"Montant Disponible : **{results['montant_disponible']:,.2f}**")
-    with sm2:
-        st.caption(f"Charges Patronales : **{results['employer_charges']:,.2f}**")
-    with sm3:
-        st.caption(f"Charges Salariales : **{results['employee_charges']:,.2f}**")
-    with sm4:
-        if results['provision_reserve_financiere'] > 0:
-            st.caption(f"Prov. {results['label_reserve']} : **{results['provision_reserve_financiere']:,.2f}**")
+        if is_electrique:
+            ik_total = km_mensuel * ik_rate_base * 1.20
+            st.caption(f"Total IK : {km_mensuel:.0f} x {ik_rate_base:.3f} x 1.20 = **{ik_total:,.2f} EUR**")
         else:
-            st.caption(f"{results['label_reserve']} (dans brut) : **{results['reserve_brute']:,.2f}**")
-    with sm5:
-        if results['nb_titres_restaurant'] > 0:
-            st.caption(f"Titres Restaurant : **{results['nb_titres_restaurant']}**")
+            ik_total = km_mensuel * ik_rate_display
+            st.caption(f"Total IK : **{ik_total:,.2f} EUR**")
 
-    st.divider()
+        st.markdown("---")
+        st.subheader("Indemnites Grand Deplacement (IGD)")
 
-    col_main, col_viz = st.columns([2, 1])
-
-    with col_main:
-        st.subheader("Detail du Bulletin")
-
-        # --- Construction du bulletin restructure (V4) ---
-        data_lines = []
-
-        # Decomposition du brut
-        data_lines.append(("Salaire de base", results['base_salary'], "Detail"))
-        data_lines.append(("Prime d'apport d'affaires", results['prime_apport'], "Detail"))
-
-        # Reserve dans le brut si reintegree
-        if results['reserve_reintegree']:
-            data_lines.append((results['label_reserve'].capitalize(), results['reserve_brute'], "Detail"))
-
-        data_lines.append(("Complement de remuneration", results['complement_remuneration'], "Detail"))
-        data_lines.append(("Complement d'apport d'affaires", results['complement_apport_affaires'], "Detail"))
-
-        if results['provision_cp']:
-            data_lines.append(("Indemnite conges payes (provisionnee)", results['indemnite_cp'], "Detail"))
+        duree_mission = st.selectbox("Duree de la mission",
+                                     ["Moins de 3 mois", "De 3 a 24 mois", "Au-dela de 24 mois"], key="sim_duree_mission")
+        if duree_mission == "Moins de 3 mois":
+            igd_bareme = IGD_BAREME_2026["moins_3_mois"]
+        elif duree_mission == "De 3 a 24 mois":
+            igd_bareme = IGD_BAREME_2026["3_a_24_mois"]
         else:
-            data_lines.append(("Indemnite conges payes", results['indemnite_cp'], "Detail"))
+            igd_bareme = IGD_BAREME_2026["24_a_72_mois"]
 
-        data_lines.append(("SALAIRE BRUT", results['gross_salary'], "Total"))
-        data_lines.append(("", 0, "Empty"))
+        zone_igd = st.selectbox("Zone IGD", ["Province", "Paris/IDF"], key="sim_zone_igd")
+        nb_repas_igd = st.number_input("Nb repas IGD", value=0, step=1, min_value=0, key="sim_repas_igd")
+        nb_nuitees_igd = st.number_input("Nb nuitees IGD", value=0, step=1, min_value=0, key="sim_nuitees_igd")
 
-        # Charges (totaux uniquement)
-        data_lines.append(("Charges Salariales", -results['employee_charges'], "Negatif"))
-        data_lines.append(("Charges Patronales", results['employer_charges'], "Detail"))
-        data_lines.append(("", 0, "Empty"))
+        igd_repas_rate = igd_bareme["repas"]
+        igd_nuitee_rate = igd_bareme["nuitee_paris"] if zone_igd == "Paris/IDF" else igd_bareme["nuitee_province"]
+        igd_total = (nb_repas_igd * igd_repas_rate) + (nb_nuitees_igd * igd_nuitee_rate)
 
-        # Frais
-        has_frais = results['total_frais_rembourses'] > 0
-        if has_frais:
-            if results['ik_amount'] > 0:
-                data_lines.append(("Indemnites Kilometriques", results['ik_amount'], "Detail"))
-            if results['igd_amount'] > 0:
-                data_lines.append(("Indemnites Grands Deplacements", results['igd_amount'], "Detail"))
-            if results.get('forfait_teletravail', 0) > 0:
-                data_lines.append((f"Forfait Teletravail ({results['jours_teletravail']}j x 2.70)", results['forfait_teletravail'], "Detail"))
-            if results['other_expenses'] > 0:
-                data_lines.append(("Autres Frais", results['other_expenses'], "Detail"))
+        if nb_repas_igd > 0 or nb_nuitees_igd > 0:
+            st.caption(f"Repas: {nb_repas_igd} x {igd_repas_rate:.2f} = {nb_repas_igd * igd_repas_rate:.2f} EUR")
+            st.caption(f"Nuitees: {nb_nuitees_igd} x {igd_nuitee_rate:.2f} = {nb_nuitees_igd * igd_nuitee_rate:.2f} EUR")
+            st.caption(f"**Total IGD : {igd_total:,.2f} EUR**")
+
+        st.markdown("---")
+        st.subheader("Invitation Dejeuner")
+        nb_invitation_dejeuner = st.number_input("Nb invitations dejeuner", value=0, step=1, min_value=0,
+                                                  help="Repas pris en charge (pas de TR ce jour)", key="sim_invitations")
+
+        st.markdown("---")
+        st.subheader("Titres Restaurant")
+        mode_tr = st.radio("Mode TR", ["Automatique", "Manuel"], horizontal=True, key="sim_mode_tr")
+        if mode_tr == "Automatique":
+            nb_tr_auto = max(0, int(days_worked_month - nb_repas_igd - nb_invitation_dejeuner - nb_demi_journees))
+            st.info(f"TR auto = {days_worked_month:.0f}j - {nb_repas_igd} IGD - {nb_invitation_dejeuner} invit. - {nb_demi_journees} demi-j = **{nb_tr_auto}**")
+            nb_titres_restaurant = nb_tr_auto
+        else:
+            nb_titres_restaurant = st.number_input("Nb Titres Restaurant", value=0, step=1, min_value=0, key="sim_tr_manuel")
+        if nb_titres_restaurant > 0:
+            st.caption(f"Part salariale : {nb_titres_restaurant} x {TR_PART_PATRONALE_MAX:.2f} = {nb_titres_restaurant * TR_PART_PATRONALE_MAX:.2f} EUR")
+            st.caption(f"Part patronale : {nb_titres_restaurant} x {TR_PART_PATRONALE_MAX:.2f} = {nb_titres_restaurant * TR_PART_PATRONALE_MAX:.2f} EUR")
+
+        st.markdown("---")
+        st.subheader("Forfait Teletravail")
+        jours_teletravail = st.number_input("Nb jours teletravail", value=0, step=1, min_value=0, max_value=22,
+                                            help="2.70 EUR/jour, max 22 jours", key="sim_teletravail")
+        if jours_teletravail > 0:
+            st.caption(f"Forfait : {jours_teletravail} x 2.70 = {jours_teletravail * 2.70:.2f} EUR")
+
+        st.markdown("---")
+        st.subheader("Autres Frais")
+        montant_facture_tel = st.number_input("Facture Tel/Internet (EUR)", value=0.0, step=10.0,
+                                               help=f"Prise en charge a {st.session_state.cfg_pct_tel_internet:.0f}% (config)", key="sim_tel")
+        frais_internet = round(montant_facture_tel * (st.session_state.cfg_pct_tel_internet / 100.0), 2)
+        if montant_facture_tel > 0:
+            st.caption(f"Pris en charge : {st.session_state.cfg_pct_tel_internet:.0f}% de {montant_facture_tel:.2f} = **{frais_internet:.2f} EUR**")
+
+        montant_abonnement_transport = st.number_input("Abonnement Transport (EUR)", value=0.0, step=10.0,
+                                                         help=f"Prise en charge a {st.session_state.cfg_pct_transport:.0f}% (config)", key="sim_transport")
+        frais_transport = round(montant_abonnement_transport * (st.session_state.cfg_pct_transport / 100.0), 2)
+        if montant_abonnement_transport > 0:
+            st.caption(f"Pris en charge : {st.session_state.cfg_pct_transport:.0f}% de {montant_abonnement_transport:.2f} = **{frais_transport:.2f} EUR**")
+
+        frais_divers = st.number_input("Autres Frais (EUR)", value=0.0, step=10.0, key="sim_frais_divers")
+        expenses_other = frais_internet + frais_transport + frais_divers
+        st.caption(f"Total Autres Frais : **{expenses_other:,.2f} EUR**")
+
+        st.markdown("---")
+        st.subheader("Frais Partages & Commission")
+        frais_partages_pct = st.number_input("Frais partages (%)", value=0.0, step=0.5, min_value=0.0,
+                                              help="Frais de gestion partages avec le client", key="sim_frais_partages")
+        # Taux et montant S+PS lies : le taux fait foi, le montant suit le CA
+        _ca_preview = tjm * days_worked_month
+        st.session_state.setdefault("sps_taux", 0.0)
+        st.session_state["sps_montant"] = round(_ca_preview * st.session_state.sps_taux / 100.0, 2)
+
+        def _sps_taux_depuis_montant():
+            if _ca_preview > 0:
+                st.session_state.sps_taux = min(st.session_state.sps_montant / _ca_preview * 100.0, 100.0)
+
+        taux_charges_sps = st.number_input("Taux Charges S+PS (%)", key="sps_taux", step=0.0001, format="%.4f", min_value=0.0, max_value=100.0,
+                                           help="Charges S+PS = Taux x Chiffre d'affaires, deduites du montant disponible")
+        st.number_input("Charges S+PS (EUR)", key="sps_montant", step=10.0, min_value=0.0, disabled=_ca_preview <= 0,
+                        on_change=_sps_taux_depuis_montant, help="Saisir un montant recalcule le taux")
+        commission_mode = st.radio("Commission apporteur", ["Aucune", "Pourcentage", "Montant fixe"], horizontal=True, key="sim_commission_mode")
+        if commission_mode == "Pourcentage":
+            commission_pct = st.number_input("Commission (%)", value=0.0, step=0.5, min_value=0.0, key="sim_commission_pct")
+            commission_apporteur = round(_ca_preview * commission_pct / 100.0, 2)
+            if commission_pct > 0:
+                st.caption(f"Commission : {commission_pct}% de {_ca_preview:,.0f} = **{commission_apporteur:,.2f} EUR**")
+        elif commission_mode == "Montant fixe":
+            commission_apporteur = st.number_input("Commission (EUR)", value=0.0, step=50.0, min_value=0.0, key="sim_commission_fixe")
+        else:
+            commission_apporteur = 0.0
+
+        st.markdown("---")
+        st.subheader("Options")
+
+        label_reserve_opt = "Indemnite de precarite reintegree" if type_contrat == "CDD" else "Reserve Financiere reintegree"
+        reserve_reintegree = st.checkbox(label_reserve_opt, value=False,
+                                         help="Cochez pour reintegrer dans le brut. Decochez pour provisionner.", key="sim_reserve")
+        use_reserve = not reserve_reintegree
+
+        provision_cp = st.checkbox("Provisions Conges Payes", value=False,
+                                    help="Si coche, les ICP sont retirees du brut et provisionnees.", key="sim_provision_cp")
+        use_mutuelle = st.checkbox("Mutuelle Sante", value=True, key="sim_mutuelle")
+        effectif_sup_50 = st.checkbox("Entreprise >= 50 salaries", value=False,
+                                       help="FNAL 0.50% si >= 50 sal. / 0.10% si < 50 sal.", key="sim_effectif")
+
+
+    # --- CALCUL AVANT AFFICHAGE ---
+    results = calculate_salary(tjm, days_worked_month, days_worked_week,
+                               ik_total, igd_total, expenses_other, use_reserve, use_mutuelle,
+                               nb_titres_restaurant, frais_intermediation_pct, jours_teletravail,
+                               effectif_sup_50, frais_partages_pct, commission_apporteur,
+                               type_contrat, provision_cp, nb_journees, nb_jours_ouvres,
+                               mois_num=mois_num,
+                               is_temps_partiel=(temps_travail == "Partiel"),
+                               taux_charges_sps=taux_charges_sps)
+
+    # Copie figée : le PDF téléchargé et son dossier utilisent exactement les mêmes données.
+    parametres_dossier = json.loads(json.dumps(dossiers.parametres(st.session_state)))
+    st.session_state.setdefault("_dossier_baseline", parametres_dossier)
+    donnees_dossier = {"format": 1, "parametres": parametres_dossier,
+                       "resultats": results, "signataire": signataire}
+    with open(__file__, "rb") as source, open(_TEMPLATE_PATH, "rb") as template:
+        donnees_dossier["version_calcul"] = hashlib.sha256(source.read() + template.read()).hexdigest()
+    pdf_bytes = create_pdf(results, consultant_name, signataire)
+    nom_fichier = re.sub(r"[^\w-]+", "_", consultant_name).strip("_") or "Consultant"
+    nom_pdf = f"{nom_fichier}_Simulation_{st.session_state['_dossier_id'][:8]}.pdf"
+    if st.session_state.pop("_dossier_enregistrer", False):
+        enregistrer_dossier(st.session_state["_dossier_id"], st.session_state["_dossier_revision"],
+                           donnees_dossier, pdf_bytes, nom_pdf)
+
+    # Main : Onglets
+    tab_simu, tab_config, tab_comm = st.tabs(["Resultats Simulation", "Configuration Globale", "Email & Explications"])
+
+    with tab_simu:
+        st.title("Simulateur de Portage Salarial 2026")
+        afficher_alertes_dossier()
+
+        if results['cout_global'] > results['montant_disponible'] + 0.01:
+            st.error(f"Budget insuffisant : le coût global ({results['cout_global']:,.2f} EUR) dépasse le montant "
+                     f"disponible ({results['montant_disponible']:,.2f} EUR). Vérifiez le TJM, les jours et les déductions.")
+
+        # --- KPIs principaux ---
+        kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+        with kpi1:
+            st.metric("Chiffre d'Affaires", f"{results['turnover']:,.2f} EUR")
+        with kpi2:
+            st.metric("Salaire Brut", f"{results['gross_salary']:,.2f} EUR")
+        with kpi3:
+            st.metric("Cout Global", f"{results['cout_global']:,.2f} EUR")
+        with kpi4:
+            st.metric("Net à payer avant impôt (frais inclus)", f"{results['net_payable']:,.2f} EUR")
+
+        # --- Sous-metriques ---
+        sm1, sm2, sm3, sm4, sm5 = st.columns(5)
+        with sm1:
+            st.caption(f"Montant Disponible : **{results['montant_disponible']:,.2f}**")
+        with sm2:
+            st.caption(f"Charges Patronales : **{results['employer_charges']:,.2f}**")
+        with sm3:
+            st.caption(f"Charges Salariales : **{results['employee_charges']:,.2f}**")
+        with sm4:
+            if results['provision_reserve_financiere'] > 0:
+                st.caption(f"Prov. {results['label_reserve']} : **{results['provision_reserve_financiere']:,.2f}**")
+            else:
+                st.caption(f"{results['label_reserve']} (dans brut) : **{results['reserve_brute']:,.2f}**")
+        with sm5:
+            if results['nb_titres_restaurant'] > 0:
+                st.caption(f"Titres Restaurant : **{results['nb_titres_restaurant']}**")
+
+        st.divider()
+
+        col_main, col_viz = st.columns([2, 1])
+
+        with col_main:
+            st.subheader("Detail du Bulletin")
+
+            # --- Construction du bulletin restructure (V4) ---
+            data_lines = []
+
+            # Decomposition du brut
+            data_lines.append(("Salaire de base", results['base_salary'], "Detail"))
+            data_lines.append(("Prime d'apport d'affaires", results['prime_apport'], "Detail"))
+
+            # Reserve dans le brut si reintegree
+            if results['reserve_reintegree']:
+                data_lines.append((results['label_reserve'].capitalize(), results['reserve_brute'], "Detail"))
+
+            data_lines.append(("Complement de remuneration", results['complement_remuneration'], "Detail"))
+            data_lines.append(("Complement d'apport d'affaires", results['complement_apport_affaires'], "Detail"))
+
+            if results['provision_cp']:
+                data_lines.append(("Indemnite conges payes (provisionnee)", results['indemnite_cp'], "Detail"))
+            else:
+                data_lines.append(("Indemnite conges payes", results['indemnite_cp'], "Detail"))
+
+            data_lines.append(("SALAIRE BRUT", results['gross_salary'], "Total"))
             data_lines.append(("", 0, "Empty"))
 
-        # Provision CP si activee
-        if results['provision_cp'] and results['provision_cp_amount'] > 0:
-            data_lines.append(("Provision Conges Payes", results['provision_cp_amount'], "Detail"))
+            # Charges (totaux uniquement)
+            data_lines.append(("Charges Salariales", -results['employee_charges'], "Negatif"))
+            data_lines.append(("Charges Patronales", results['employer_charges'], "Detail"))
+            data_lines.append(("", 0, "Empty"))
 
-        # Provision reserve si provisionnee
-        if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
-            label_prov = f"Provision {results['label_reserve']}"
-            data_lines.append((label_prov, results['provision_reserve_financiere'], "Detail"))
+            # Frais
+            has_frais = results['total_frais_rembourses'] > 0
+            if has_frais:
+                if results['ik_amount'] > 0:
+                    data_lines.append(("Indemnites Kilometriques", results['ik_amount'], "Detail"))
+                if results['igd_amount'] > 0:
+                    data_lines.append(("Indemnites Grands Deplacements", results['igd_amount'], "Detail"))
+                if results.get('forfait_teletravail', 0) > 0:
+                    data_lines.append((f"Forfait Teletravail ({results['jours_teletravail']}j x 2.70)", results['forfait_teletravail'], "Detail"))
+                if results['other_expenses'] > 0:
+                    data_lines.append(("Autres Frais", results['other_expenses'], "Detail"))
+                data_lines.append(("", 0, "Empty"))
 
-        data_lines.append(("", 0, "Empty"))
-        data_lines.append(("Net a payer avant impot", results['net_payable'], "Final"))
+            # Provision CP si activee
+            if results['provision_cp'] and results['provision_cp_amount'] > 0:
+                data_lines.append(("Provision Conges Payes", results['provision_cp_amount'], "Detail"))
 
-        df_disp = pd.DataFrame(data_lines, columns=["Libelle", "Montant", "Type"])
+            # Provision reserve si provisionnee
+            if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
+                label_prov = f"Provision {results['label_reserve']}"
+                data_lines.append((label_prov, results['provision_reserve_financiere'], "Detail"))
 
-        st.dataframe(
-            df_disp[df_disp["Type"] != "Empty"][["Libelle", "Montant"]]
-            .style.format({"Montant": "{:,.2f} EUR"}),
-            use_container_width=True,
-            hide_index=True,
-            height=500
-        )
+            data_lines.append(("", 0, "Empty"))
+            data_lines.append(("Net a payer avant impot", results['net_payable'], "Final"))
 
-        # --- Expander : Detail Cotisations Patronales ---
-        with st.expander("Detail Cotisations Patronales (ligne par ligne)"):
-            effectif_label = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
-            fnal_rate_txt = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
-
-            taux_source = "configure" if st.session_state.cfg_taux_charges_override > 0 else "calcule"
-            st.info(f"**Effectif : {effectif_label}** | FNAL {fnal_rate_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}% | Taux de charges patronales : {results['taux_charges']*100:.2f}% ({taux_source})")
-
-            pat_lines = [d for d in results['cotis_details'] if d['montant_pat'] > 0]
-            df_pat = pd.DataFrame([{
-                "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
-                "Base": d['base'],
-                "Taux": f"{d['taux_pat']*100:.3f}%",
-                "Montant": d['montant_pat']
-            } for d in pat_lines])
+            df_disp = pd.DataFrame(data_lines, columns=["Libelle", "Montant", "Type"])
 
             st.dataframe(
-                df_pat.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
-                use_container_width=True, hide_index=True
+                df_disp[df_disp["Type"] != "Empty"][["Libelle", "Montant"]]
+                .style.format({"Montant": "{:,.2f} EUR"}),
+                use_container_width=True,
+                hide_index=True,
+                height=500
             )
 
-            st.markdown(f"""
+            # --- Expander : Detail Cotisations Patronales ---
+            with st.expander("Detail Cotisations Patronales (ligne par ligne)"):
+                effectif_label = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
+                fnal_rate_txt = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
+
+                taux_source = "configure" if st.session_state.cfg_taux_charges_override > 0 else "calcule"
+                st.info(f"**Effectif : {effectif_label}** | FNAL {fnal_rate_txt} | AT/MP {st.session_state.cfg_taux_atmp:.2f}% | Taux de charges patronales : {results['taux_charges']*100:.2f}% ({taux_source})")
+
+                pat_lines = [d for d in results['cotis_details'] if d['montant_pat'] > 0]
+                df_pat = pd.DataFrame([{
+                    "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
+                    "Base": d['base'],
+                    "Taux": f"{d['taux_pat']*100:.3f}%",
+                    "Montant": d['montant_pat']
+                } for d in pat_lines])
+
+                st.dataframe(
+                    df_pat.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
+                    use_container_width=True, hide_index=True
+                )
+
+                st.markdown(f"""
 **Sous-total cotisations** : **{results['cotis_total_pat']:,.2f} EUR**
 
 **+ Mutuelle Part Patronale** : {results['mutuelle_part_pat']:,.2f} EUR
@@ -1281,22 +1457,22 @@ with tab_simu:
 **TOTAL CHARGES PATRONALES = {results['employer_charges']:,.2f} EUR**
             """)
 
-        # --- Expander : Detail Cotisations Salariales ---
-        with st.expander("Detail Cotisations Salariales (ligne par ligne)"):
-            sal_lines = [d for d in results['cotis_details'] if d['montant_sal'] > 0]
-            df_sal = pd.DataFrame([{
-                "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
-                "Base": d['base'],
-                "Taux": f"{d['taux_sal']*100:.3f}%",
-                "Montant": d['montant_sal']
-            } for d in sal_lines])
+            # --- Expander : Detail Cotisations Salariales ---
+            with st.expander("Detail Cotisations Salariales (ligne par ligne)"):
+                sal_lines = [d for d in results['cotis_details'] if d['montant_sal'] > 0]
+                df_sal = pd.DataFrame([{
+                    "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
+                    "Base": d['base'],
+                    "Taux": f"{d['taux_sal']*100:.3f}%",
+                    "Montant": d['montant_sal']
+                } for d in sal_lines])
 
-            st.dataframe(
-                df_sal.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
-                use_container_width=True, hide_index=True
-            )
+                st.dataframe(
+                    df_sal.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
+                    use_container_width=True, hide_index=True
+                )
 
-            st.markdown(f"""
+                st.markdown(f"""
 **Sous-total cotisations** : **{results['cotis_total_sal']:,.2f} EUR**
 
 **+ Mutuelle Part Salariale** : {results['mutuelle_part_sal']:,.2f} EUR
@@ -1306,9 +1482,9 @@ with tab_simu:
 **TOTAL CHARGES SALARIALES = {results['employee_charges']:,.2f} EUR**
             """)
 
-        # --- Expander : Formules de Calcul ---
-        with st.expander("Formules de Calcul"):
-            st.markdown(f"""
+            # --- Expander : Formules de Calcul ---
+            with st.expander("Formules de Calcul"):
+                st.markdown(f"""
 **Tranches :**
 - Tranche A (PMSS) = min(Brut, {st.session_state.cfg_pmss:,.2f}) = **{results['tranche_a']:,.2f} EUR**
 - Tranche B = max(0, Brut - PMSS) = **{results['tranche_b']:,.2f} EUR**
@@ -1335,9 +1511,9 @@ with tab_simu:
 = {results['cout_global']:,.2f} EUR
 ```
             """)
-            if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
-                charges_futures = results['provision_reserve_financiere'] - results['reserve_amount']
-                st.markdown(f"""
+                if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
+                    charges_futures = results['provision_reserve_financiere'] - results['reserve_amount']
+                    st.markdown(f"""
 **PROVISION {results['label_reserve'].upper()}**
 ```
 = MONTANT DISPO - (BRUT + CHARGES PAT)
@@ -1347,193 +1523,209 @@ with tab_simu:
 *(dont {results['label_reserve']} brute {results['reserve_amount']:,.2f} EUR + charges futures {charges_futures:,.2f} EUR)*
                 """)
 
-    with col_viz:
-        st.subheader("Repartition")
+        with col_viz:
+            st.subheader("Repartition")
 
-        # Taux reel CA -> Net
-        taux_ca_net = (results['net_payable'] / results['turnover'] * 100) if results['turnover'] > 0 else 0
-        st.info(f"**Taux CA → Net : {taux_ca_net:.1f}%**")
+            # Taux reel CA -> Net
+            taux_ca_net = (results['net_payable'] / results['turnover'] * 100) if results['turnover'] > 0 else 0
+            st.info(f"**Taux CA → Net : {taux_ca_net:.1f}%**")
 
-        # Calcul des parts pour le camembert
-        frais_gestion_total = results['total_deductions']
-        cotis_sociales = (results['cotis_total_pat'] + results['cotis_total_sal']
-                          + results['forfait_social'] - results['reduction_rgdu']
-                          + results['mutuelle_part_pat'] + results['mutuelle_part_sal']
-                          + results['tr_part_pat'] + results['tr_part_sal'])
-        provision_viz = results['provision_reserve_financiere'] if not results['reserve_reintegree'] else 0
+            # Calcul des parts pour le camembert
+            frais_gestion_total = results['total_deductions']
+            cotis_sociales = (results['cotis_total_pat'] + results['cotis_total_sal']
+                              + results['forfait_social'] - results['reduction_rgdu']
+                              + results['mutuelle_part_pat'] + results['mutuelle_part_sal']
+                              + results['tr_part_pat'] + results['tr_part_sal'])
+            provision_viz = results['provision_reserve_financiere'] if not results['reserve_reintegree'] else 0
 
-        labels = ['Net à payer', 'Frais de gestion', 'Charges patronales et salariales', 'Provision Réserve']
-        values = [results['net_payable'], frais_gestion_total, cotis_sociales, provision_viz]
-        colors = ['#4A90D9', '#9E9E9E', '#E91E63', '#F48FB1']
+            labels = ['Net à payer', 'Frais de gestion', 'Charges patronales et salariales', 'Provision Réserve']
+            values = [results['net_payable'], frais_gestion_total, cotis_sociales, provision_viz]
+            colors = ['#4A90D9', '#9E9E9E', '#E91E63', '#F48FB1']
 
-        fig = go.Figure(data=[go.Pie(
-            labels=labels, values=values, hole=.4,
-            marker=dict(colors=colors, line=dict(color='white', width=2)),
-            textinfo='percent',
-            textposition='inside',
-            textfont=dict(size=13, color='white'),
-            hoverinfo='label+value+percent',
-        )])
-        fig.update_layout(
-            margin=dict(t=10, b=10, l=10, r=10),
-            showlegend=True,
-            legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(size=11)),
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.markdown("### Export")
-        pdf_bytes = create_pdf(results, consultant_name, signataire)
-        b64 = base64.b64encode(pdf_bytes).decode()
-        href = (
-            f'<a href="data:application/octet-stream;base64,{b64}" download="{consultant_nom}_{consultant_prenom}_SimulationPortageSigne+.pdf" style="text-decoration:none;">'
-            f'<button style="width:100%; padding: 10px; background-color: #E91E63; color: white; border: none; border-radius: 5px; cursor: pointer;">'
-            f'Telecharger le PDF</button></a>'
-        )
-        st.markdown(href, unsafe_allow_html=True)
-
-with tab_config:
-    st.header("Parametres Globaux de Calcul")
-    st.warning("Ces modifications impactent tous les calculs. A modifier avec precaution.")
-
-    c1, c2, c3 = st.columns(3)
-
-    with c1:
-        st.subheader("Salaires & Primes")
-        st.session_state.cfg_base_salary = st.number_input(
-            "Salaire de Base Temps Plein (EUR)",
-            value=st.session_state.cfg_base_salary, step=50.0
-        )
-        st.session_state.cfg_taux_prime = st.number_input(
-            "Taux Prime d'Apport (%)",
-            value=st.session_state.cfg_taux_prime, step=0.1
-        )
-        st.session_state.cfg_taux_cp = st.number_input(
-            "Taux Indemnite Conges Payes (%)",
-            value=st.session_state.cfg_taux_cp, step=0.1
-        )
-        st.session_state.cfg_taux_reserve = st.number_input(
-            "Taux Reserve Financiere (%)",
-            value=st.session_state.cfg_taux_reserve, step=0.1
-        )
-
-    with c2:
-        st.subheader("Cotisations & References")
-        st.session_state.cfg_taux_charges_override = st.number_input(
-            "TAUX DE CHARGES PATRONALES Silae (%)", min_value=0.0,
-            value=st.session_state.cfg_taux_charges_override, format="%.4f", step=0.0001,
-            help="0 = auto-calcul. Saisir le taux Silae (patronal) pour matcher le complement de remuneration exactement."
-        )
-        st.session_state.cfg_taux_atmp = st.number_input(
-            "Taux AT/MP (%)",
-            value=st.session_state.cfg_taux_atmp, format="%.2f", step=0.01,
-            help="Accident du Travail / Maladie Professionnelle. Seul taux patronal modifiable."
-        )
-
-        fnal_effectif = "0.10% (< 50 sal.)" if not effectif_sup_50 else "0.50% (>= 50 sal.)"
-        st.info(f"**FNAL** : {fnal_effectif} (automatique selon effectif)")
+            fig = go.Figure(data=[go.Pie(
+                labels=labels, values=values, hole=.4,
+                marker=dict(colors=colors, line=dict(color='white', width=2)),
+                textinfo='percent',
+                textposition='inside',
+                textfont=dict(size=13, color='white'),
+                hoverinfo='label+value+percent',
+            )])
+            fig.update_layout(
+                margin=dict(t=10, b=10, l=10, r=10),
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5, font=dict(size=11)),
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
         st.divider()
-        st.session_state.cfg_pmss = st.number_input(
-            "Plafond Secu (PMSS) (EUR)",
-            value=st.session_state.cfg_pmss, step=100.0
-        )
-        st.session_state.cfg_smic_mensuel = st.number_input(
-            "SMIC Mensuel Brut (EUR)",
-            value=st.session_state.cfg_smic_mensuel, step=10.0
-        )
+        args_dossier = (st.session_state["_dossier_id"], st.session_state["_dossier_revision"],
+                        donnees_dossier, pdf_bytes, nom_pdf)
+        nom_renseigne = bool(consultant_prenom.strip() or consultant_nom.strip())
+        with st.container(key="actions_simulation"):
+            dossier_courant, sauvegarde, telechargement = st.columns([2, 1.1, 1.4], vertical_alignment="center")
+            with dossier_courant:
+                st.text(consultant_name if nom_renseigne else "Nouvelle simulation")
+                if st.session_state["_dossier_revision"]:
+                    st.caption("Modifications non enregistrées" if dossier_modifie() else "Dossier enregistré")
+                    with st.popover("PDF enregistré", icon=":material/description:"):
+                        st.download_button("Dernier PDF enregistré", st.session_state["_dossier_pdf"],
+                                           file_name=st.session_state["_dossier_nom_pdf"], mime="application/pdf",
+                                           key="pdf_archive", on_click="ignore", use_container_width=True)
+                else:
+                    st.caption("Renseignez un consultant pour enregistrer." if not nom_renseigne else "Prêt à enregistrer")
+            sauvegarde.button("Enregistrer le dossier", key="enregistrer_dossier", disabled=not nom_renseigne,
+                              on_click=lambda: st.session_state.update(_dossier_enregistrer=True),
+                              use_container_width=True, icon=":material/save:")
+            telechargement.download_button("Télécharger le PDF", pdf_bytes, file_name=nom_pdf, mime="application/pdf",
+                                           key="telecharger_pdf", on_click=enregistrer_dossier, args=args_dossier,
+                                           disabled=not nom_renseigne, type="primary", use_container_width=True,
+                                           icon=":material/download:")
+        st.caption("Enregistrer ou télécharger le PDF ajoute ce dossier à votre profil.")
 
+
+    with tab_config:
+        st.header("Parametres Globaux de Calcul")
+        st.warning("Ces modifications impactent tous les calculs. A modifier avec precaution.")
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.subheader("Salaires & Primes")
+            st.number_input(
+                "Salaire de Base Temps Plein (EUR)",
+                key="cfg_base_salary", step=50.0
+            )
+            st.number_input(
+                "Taux Prime d'Apport (%)",
+                key="cfg_taux_prime", step=0.1
+            )
+            st.number_input(
+                "Taux Indemnite Conges Payes (%)",
+                key="cfg_taux_cp", step=0.1
+            )
+            st.number_input(
+                "Taux Reserve Financiere (%)",
+                key="cfg_taux_reserve", step=0.1
+            )
+
+        with c2:
+            st.subheader("Cotisations & References")
+            st.number_input(
+                "TAUX DE CHARGES PATRONALES Silae (%)", min_value=0.0,
+                key="cfg_taux_charges_override", format="%.4f", step=0.0001,
+                help="0 = auto-calcul. Saisir le taux Silae (patronal) pour matcher le complement de remuneration exactement."
+            )
+            st.number_input(
+                "Taux AT/MP (%)",
+                key="cfg_taux_atmp", format="%.2f", step=0.01,
+                help="Accident du Travail / Maladie Professionnelle. Seul taux patronal modifiable."
+            )
+
+            fnal_effectif = "0.10% (< 50 sal.)" if not effectif_sup_50 else "0.50% (>= 50 sal.)"
+            st.info(f"**FNAL** : {fnal_effectif} (automatique selon effectif)")
+
+            st.divider()
+            st.number_input(
+                "Plafond Secu (PMSS) (EUR)",
+                key="cfg_pmss", step=100.0
+            )
+            st.number_input(
+                "SMIC Mensuel Brut (EUR)",
+                key="cfg_smic_mensuel", step=10.0
+            )
+
+            st.divider()
+            st.subheader("Mutuelle")
+            st.number_input(
+                "Taux Mutuelle (% du PMSS)",
+                key="cfg_mutuelle_taux", step=0.1
+            )
+            st.number_input(
+                "Part Patronale Mutuelle (%)",
+                key="cfg_mutuelle_part_pat", step=5.0
+            )
+
+        with c3:
+            st.subheader("Frais & Divers")
+            st.number_input(
+                "Frais de Gestion (%)",
+                key="cfg_frais_gestion", step=0.5
+            )
+
+            st.divider()
+            st.subheader("% Prise en charge")
+            st.number_input(
+                "% Abonnement Tel/Internet",
+                key="cfg_pct_tel_internet", step=5.0, min_value=0.0, max_value=100.0,
+                help="Pourcentage de la facture pris en charge"
+            )
+            st.number_input(
+                "% Abonnement Transport",
+                key="cfg_pct_transport", step=5.0, min_value=0.0, max_value=100.0,
+                help="Pourcentage de l'abonnement pris en charge"
+            )
+
+            st.divider()
+            st.markdown("**Taux IK** (defini automatiquement selon bareme URSSAF)")
+            st.caption(f"Taux actuel : {st.session_state.cfg_ik_rate:.3f} EUR/km")
+
+            st.divider()
+            st.markdown("#### Baremes IGD URSSAF 2026")
+            for duree, vals in IGD_BAREME_2026.items():
+                label = duree.replace("_", " ").capitalize()
+                st.caption(f"**{label}** : Repas {vals['repas']:.2f} | Province {vals['nuitee_province']:.2f} | Paris {vals['nuitee_paris']:.2f}")
+
+            st.divider()
+            st.markdown("#### Titres Restaurant")
+            st.caption(f"Valeur faciale : {TR_VALEUR_FACIALE:.2f} EUR")
+            st.caption(f"Part patronale max : {TR_PART_PATRONALE_MAX:.2f} EUR")
+
+        # Tableau des taux fixes 2026 (lecture seule)
         st.divider()
-        st.subheader("Mutuelle")
-        st.session_state.cfg_mutuelle_taux = st.number_input(
-            "Taux Mutuelle (% du PMSS)",
-            value=st.session_state.cfg_mutuelle_taux, step=0.1
-        )
-        st.session_state.cfg_mutuelle_part_pat = st.number_input(
-            "Part Patronale Mutuelle (%)",
-            value=st.session_state.cfg_mutuelle_part_pat, step=5.0
-        )
+        with st.expander("Taux de cotisations 2026 (lecture seule)"):
+            taux_data = []
+            for nom, cotis in COTISATIONS_2026.items():
+                label = COTISATIONS_LABELS.get(nom, nom)
+                base_label = {"TOTALITE": "Totalite", "TRANCHE_A": "Tranche A (PMSS)", "TRANCHE_B": "Tranche B", "CSG": "Base CSG"}.get(cotis["base"], cotis["base"])
+                taux_data.append({
+                    "Cotisation": label,
+                    "Taux Patron": f"{cotis['pat']*100:.3f}%",
+                    "Taux Salarie": f"{cotis['sal']*100:.3f}%",
+                    "Base": base_label,
+                })
+            df_taux = pd.DataFrame(taux_data)
+            st.dataframe(df_taux, use_container_width=True, hide_index=True, height=600)
 
-    with c3:
-        st.subheader("Frais & Divers")
-        st.session_state.cfg_frais_gestion = st.number_input(
-            "Frais de Gestion (%)",
-            value=st.session_state.cfg_frais_gestion, step=0.5
-        )
+        st.success("Les modifications sont prises en compte automatiquement dans l'onglet 'Resultats'.")
 
-        st.divider()
-        st.subheader("% Prise en charge")
-        st.session_state.cfg_pct_tel_internet = st.number_input(
-            "% Abonnement Tel/Internet",
-            value=st.session_state.cfg_pct_tel_internet, step=5.0, min_value=0.0, max_value=100.0,
-            help="Pourcentage de la facture pris en charge"
-        )
-        st.session_state.cfg_pct_transport = st.number_input(
-            "% Abonnement Transport",
-            value=st.session_state.cfg_pct_transport, step=5.0, min_value=0.0, max_value=100.0,
-            help="Pourcentage de l'abonnement pris en charge"
-        )
+    with tab_comm:
+        c_expl, c_mail = st.columns(2)
 
-        st.divider()
-        st.markdown("**Taux IK** (defini automatiquement selon bareme URSSAF)")
-        st.caption(f"Taux actuel : {st.session_state.cfg_ik_rate:.3f} EUR/km")
+        with c_expl:
+            st.header("Comprendre le calcul")
+            st.markdown("Voici l'explication detaillee etape par etape pour cette simulation precise (Bareme 2026) :")
 
-        st.divider()
-        st.markdown("#### Baremes IGD URSSAF 2026")
-        for duree, vals in IGD_BAREME_2026.items():
-            label = duree.replace("_", " ").capitalize()
-            st.caption(f"**{label}** : Repas {vals['repas']:.2f} | Province {vals['nuitee_province']:.2f} | Paris {vals['nuitee_paris']:.2f}")
+            # Section 1 - Point de depart
+            st.markdown("### 1. Le Point de Depart (CA)")
+            st.markdown(f"Chiffre d'affaires = TJM x Jours = **{results['turnover']:,.2f} EUR**")
 
-        st.divider()
-        st.markdown("#### Titres Restaurant")
-        st.caption(f"Valeur faciale : {TR_VALEUR_FACIALE:.2f} EUR")
-        st.caption(f"Part patronale max : {TR_PART_PATRONALE_MAX:.2f} EUR")
+            # Section 2 - Deductions initiales
+            st.markdown("### 2. Les Deductions Initiales")
+            txt_deductions = f"- Frais de gestion ({st.session_state.cfg_frais_gestion}%) : **{results['management_fees']:,.2f} EUR**"
+            if results['frais_intermediation'] > 0:
+                txt_deductions += f"\n- Frais d'intermediation ({frais_intermediation_pct}%) : **{results['frais_intermediation']:,.2f} EUR**"
+            if results['frais_partages'] > 0:
+                txt_deductions += f"\n- Frais partages ({frais_partages_pct}%) : **{results['frais_partages']:,.2f} EUR**"
+            if results['commission_apporteur'] > 0:
+                txt_deductions += f"\n- Commission apporteur d'affaires : **{results['commission_apporteur']:,.2f} EUR**"
+            if results['charges_sps'] > 0:
+                txt_deductions += f"\n- Charges S+PS ({taux_charges_sps:.4f}%) : **{results['charges_sps']:,.2f} EUR**"
+            txt_deductions += f"\n\n= **Montant Disponible : {results['montant_disponible']:,.2f} EUR**"
+            st.markdown(txt_deductions)
 
-    # Tableau des taux fixes 2026 (lecture seule)
-    st.divider()
-    with st.expander("Taux de cotisations 2026 (lecture seule)"):
-        taux_data = []
-        for nom, cotis in COTISATIONS_2026.items():
-            label = COTISATIONS_LABELS.get(nom, nom)
-            base_label = {"TOTALITE": "Totalite", "TRANCHE_A": "Tranche A (PMSS)", "TRANCHE_B": "Tranche B", "CSG": "Base CSG"}.get(cotis["base"], cotis["base"])
-            taux_data.append({
-                "Cotisation": label,
-                "Taux Patron": f"{cotis['pat']*100:.3f}%",
-                "Taux Salarie": f"{cotis['sal']*100:.3f}%",
-                "Base": base_label,
-            })
-        df_taux = pd.DataFrame(taux_data)
-        st.dataframe(df_taux, use_container_width=True, hide_index=True, height=600)
-
-    st.success("Les modifications sont prises en compte automatiquement dans l'onglet 'Resultats'.")
-
-with tab_comm:
-    c_expl, c_mail = st.columns(2)
-
-    with c_expl:
-        st.header("Comprendre le calcul")
-        st.markdown("Voici l'explication detaillee etape par etape pour cette simulation precise (Bareme 2026) :")
-
-        # Section 1 - Point de depart
-        st.markdown("### 1. Le Point de Depart (CA)")
-        st.markdown(f"Chiffre d'affaires = TJM x Jours = **{results['turnover']:,.2f} EUR**")
-
-        # Section 2 - Deductions initiales
-        st.markdown("### 2. Les Deductions Initiales")
-        txt_deductions = f"- Frais de gestion ({st.session_state.cfg_frais_gestion}%) : **{results['management_fees']:,.2f} EUR**"
-        if results['frais_intermediation'] > 0:
-            txt_deductions += f"\n- Frais d'intermediation ({frais_intermediation_pct}%) : **{results['frais_intermediation']:,.2f} EUR**"
-        if results['frais_partages'] > 0:
-            txt_deductions += f"\n- Frais partages ({frais_partages_pct}%) : **{results['frais_partages']:,.2f} EUR**"
-        if results['commission_apporteur'] > 0:
-            txt_deductions += f"\n- Commission apporteur d'affaires : **{results['commission_apporteur']:,.2f} EUR**"
-        if results['charges_sps'] > 0:
-            txt_deductions += f"\n- Charges S+PS ({taux_charges_sps:.4f}%) : **{results['charges_sps']:,.2f} EUR**"
-        txt_deductions += f"\n\n= **Montant Disponible : {results['montant_disponible']:,.2f} EUR**"
-        st.markdown(txt_deductions)
-
-        # Section 3 - Construction du brut
-        st.markdown("### 3. La Construction du Brut")
-        txt_brut = f"""- Salaire de Base (fixe) : **{results['base_salary']:,.2f} EUR**
+            # Section 3 - Construction du brut
+            st.markdown("### 3. La Construction du Brut")
+            txt_brut = f"""- Salaire de Base (fixe) : **{results['base_salary']:,.2f} EUR**
 - Prime Apport d'Affaires (5% du base) : **{results['prime_apport']:,.2f} EUR**
 - Complement de Remuneration (variable) : **{results['complement_remuneration']:,.2f} EUR**
 - Complement Apport d'Affaires (5% du complement) : **{results['complement_apport_affaires']:,.2f} EUR**
@@ -1542,16 +1734,16 @@ with tab_comm:
 = **Salaire Brut Total : {results['gross_salary']:,.2f} EUR**
 
 *Tranches : A = {results['tranche_a']:,.2f} EUR (PMSS) | B = {results['tranche_b']:,.2f} EUR*"""
-        if not results['reserve_reintegree'] and results.get('provision_reserve_financiere', 0) > 0:
-            txt_brut += f"\n\n*Provision {results['label_reserve']} : {results['provision_reserve_financiere']:,.2f} EUR (reserve + charges futures, hors brut)*"
-        st.markdown(txt_brut)
+            if not results['reserve_reintegree'] and results.get('provision_reserve_financiere', 0) > 0:
+                txt_brut += f"\n\n*Provision {results['label_reserve']} : {results['provision_reserve_financiere']:,.2f} EUR (reserve + charges futures, hors brut)*"
+            st.markdown(txt_brut)
 
-        # Section 4 - Charges patronales (ligne par ligne)
-        st.markdown("### 4. Les Charges Patronales (ligne par ligne)")
-        effectif_expl = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
-        fnal_expl = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
+            # Section 4 - Charges patronales (ligne par ligne)
+            st.markdown("### 4. Les Charges Patronales (ligne par ligne)")
+            effectif_expl = "< 50 salaries" if not results.get('effectif_sup_50', False) else ">= 50 salaries"
+            fnal_expl = "0.10%" if not results.get('effectif_sup_50', False) else "0.50%"
 
-        st.markdown(f"""
+            st.markdown(f"""
 **Parametres :**
 - Effectif entreprise : **{effectif_expl}**
 - FNAL : **{fnal_expl}**
@@ -1561,69 +1753,69 @@ with tab_comm:
 - Total cotisations : **{results['cotis_total_pat']:,.2f} EUR** (detail dans l'onglet Resultats)
         """)
 
-        st.markdown(f"""
+            st.markdown(f"""
 **Elements supplementaires :**
 - Mutuelle part patronale : **{results['mutuelle_part_pat']:,.2f} EUR**
 - Titres Restaurant part patronale ({results['nb_titres_restaurant']} x {TR_PART_PATRONALE_MAX:.2f}) : **{results['tr_part_pat']:,.2f} EUR**
 - Forfait Social Prevoyance (8% de {results['prev_pat_total']:,.2f}) : **{results['forfait_social']:,.2f} EUR**
         """)
 
-        if results.get('reduction_rgdu', 0) > 0:
-            st.markdown(f"""
+            if results.get('reduction_rgdu', 0) > 0:
+                st.markdown(f"""
 **Reduction RGDU 2026 (obligatoire)** - Allegement charges patronales
 - Seuil : Brut < 3 SMIC ({3 * st.session_state.cfg_smic_mensuel:,.2f} EUR)
 - Votre brut : {results['gross_salary']:,.2f} EUR (eligible)
 - Reduction calculee : **-{results['reduction_rgdu']:,.2f} EUR**
             """)
 
-        st.success(f"""
+            st.success(f"""
 **TOTAL CHARGES PATRONALES**
 = Cotisations ({results['cotis_total_pat']:,.2f}) + Mutuelle ({results['mutuelle_part_pat']:,.2f}) + TR ({results['tr_part_pat']:,.2f}) + Forfait Social ({results['forfait_social']:,.2f}) - RGDU ({results.get('reduction_rgdu', 0):,.2f})
 = **{results['employer_charges']:,.2f} EUR**
         """)
 
-        # Expander tableau cotisations patronales
-        with st.expander("Tableau cotisations patronales 2026"):
-            pat_lines = [d for d in results['cotis_details'] if d['montant_pat'] > 0]
-            df_pat_expl = pd.DataFrame([{
-                "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
-                "Base": d['base'],
-                "Taux": f"{d['taux_pat']*100:.3f}%",
-                "Montant": d['montant_pat']
-            } for d in pat_lines])
-            st.dataframe(
-                df_pat_expl.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
-                use_container_width=True, hide_index=True
-            )
+            # Expander tableau cotisations patronales
+            with st.expander("Tableau cotisations patronales 2026"):
+                pat_lines = [d for d in results['cotis_details'] if d['montant_pat'] > 0]
+                df_pat_expl = pd.DataFrame([{
+                    "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
+                    "Base": d['base'],
+                    "Taux": f"{d['taux_pat']*100:.3f}%",
+                    "Montant": d['montant_pat']
+                } for d in pat_lines])
+                st.dataframe(
+                    df_pat_expl.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
+                    use_container_width=True, hide_index=True
+                )
 
-        # Section 5 - Frais rembourses
-        st.markdown("### 5. Les Frais Rembourses (non imposables)")
-        txt_frais = ""
-        if results['ik_amount'] > 0:
-            txt_frais += f"- IK selon bareme URSSAF ({st.session_state.cfg_ik_rate:.3f} EUR/km) : **{results['ik_amount']:,.2f} EUR**\n"
-        if results['igd_amount'] > 0:
-            txt_frais += f"- IGD (repas + nuitees) : **{results['igd_amount']:,.2f} EUR**\n"
-        if results.get('forfait_teletravail', 0) > 0:
-            txt_frais += f"- Forfait Teletravail ({results['jours_teletravail']}j x 2.70) : **{results['forfait_teletravail']:,.2f} EUR**\n"
-        if results['other_expenses'] > 0:
-            txt_frais += f"- Autres frais : **{results['other_expenses']:,.2f} EUR**\n"
-        txt_frais += f"\n= **Total Frais Rembourses : {results['total_frais_rembourses']:,.2f} EUR**"
-        st.markdown(txt_frais)
+            # Section 5 - Frais rembourses
+            st.markdown("### 5. Les Frais Rembourses (non imposables)")
+            txt_frais = ""
+            if results['ik_amount'] > 0:
+                txt_frais += f"- IK selon bareme URSSAF ({st.session_state.cfg_ik_rate:.3f} EUR/km) : **{results['ik_amount']:,.2f} EUR**\n"
+            if results['igd_amount'] > 0:
+                txt_frais += f"- IGD (repas + nuitees) : **{results['igd_amount']:,.2f} EUR**\n"
+            if results.get('forfait_teletravail', 0) > 0:
+                txt_frais += f"- Forfait Teletravail ({results['jours_teletravail']}j x 2.70) : **{results['forfait_teletravail']:,.2f} EUR**\n"
+            if results['other_expenses'] > 0:
+                txt_frais += f"- Autres frais : **{results['other_expenses']:,.2f} EUR**\n"
+            txt_frais += f"\n= **Total Frais Rembourses : {results['total_frais_rembourses']:,.2f} EUR**"
+            st.markdown(txt_frais)
 
-        # Section 6 - Cout global
-        st.markdown("### 6. Le Cout Global")
-        st.markdown(f"""
+            # Section 6 - Cout global
+            st.markdown("### 6. Le Cout Global")
+            st.markdown(f"""
 **COUT GLOBAL = BRUT + CHARGES PATRONALES + TOTAL FRAIS**
 
 = {results['gross_salary']:,.2f} + {results['employer_charges']:,.2f} + {results['total_frais_rembourses']:,.2f} = **{results['cout_global']:,.2f} EUR**
         """)
 
-        # Section 7 - Reserve
-        if not results['reserve_reintegree'] and results.get('provision_reserve_financiere', 0) > 0:
-            label_res = results['label_reserve']
-            charges_futures = results['provision_reserve_financiere'] - results['reserve_amount']
-            st.markdown(f"### 7. La Provision {label_res.capitalize()}")
-            st.markdown(f"""
+            # Section 7 - Reserve
+            if not results['reserve_reintegree'] and results.get('provision_reserve_financiere', 0) > 0:
+                label_res = results['label_reserve']
+                charges_futures = results['provision_reserve_financiere'] - results['reserve_amount']
+                st.markdown(f"### 7. La Provision {label_res.capitalize()}")
+                st.markdown(f"""
 **PROVISION {label_res.upper()} = MONTANT DISPO - (BRUT + CHARGES PAT)**
 
 = {results['budget_salaire']:,.2f} - ({results['gross_salary']:,.2f} + {results['employer_charges']:,.2f})
@@ -1635,10 +1827,10 @@ with tab_comm:
 *Cet argent reste a vous ! Il sert a financer vos periodes d'intercontrat ou est verse en fin de contrat.*
             """)
 
-        # Section 8 - Charges salariales (ligne par ligne)
-        st.markdown("### 8. Les Charges Salariales (ligne par ligne)")
+            # Section 8 - Charges salariales (ligne par ligne)
+            st.markdown("### 8. Les Charges Salariales (ligne par ligne)")
 
-        st.markdown(f"""
+            st.markdown(f"""
 **Cotisations salariales calculees ligne par ligne** (comme Silae)
 - Total cotisations : **{results['cotis_total_sal']:,.2f} EUR** (detail dans l'onglet Resultats)
 
@@ -1647,95 +1839,95 @@ with tab_comm:
 - Titres Restaurant part salariale ({results['nb_titres_restaurant']} x {TR_PART_PATRONALE_MAX:.2f}) : **{results['tr_part_sal']:,.2f} EUR**
         """)
 
-        st.success(f"""
+            st.success(f"""
 **TOTAL CHARGES SALARIALES**
 = Cotisations ({results['cotis_total_sal']:,.2f}) + Mutuelle ({results['mutuelle_part_sal']:,.2f}) + TR ({results['tr_part_sal']:,.2f})
 = **{results['employee_charges']:,.2f} EUR**
         """)
 
-        # Expander tableau cotisations salariales
-        with st.expander("Tableau cotisations salariales 2026"):
-            sal_lines = [d for d in results['cotis_details'] if d['montant_sal'] > 0]
-            df_sal_expl = pd.DataFrame([{
-                "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
-                "Base": d['base'],
-                "Taux": f"{d['taux_sal']*100:.3f}%",
-                "Montant": d['montant_sal']
-            } for d in sal_lines])
-            st.dataframe(
-                df_sal_expl.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
-                use_container_width=True, hide_index=True
-            )
+            # Expander tableau cotisations salariales
+            with st.expander("Tableau cotisations salariales 2026"):
+                sal_lines = [d for d in results['cotis_details'] if d['montant_sal'] > 0]
+                df_sal_expl = pd.DataFrame([{
+                    "Cotisation": COTISATIONS_LABELS.get(d['nom'], d['nom']),
+                    "Base": d['base'],
+                    "Taux": f"{d['taux_sal']*100:.3f}%",
+                    "Montant": d['montant_sal']
+                } for d in sal_lines])
+                st.dataframe(
+                    df_sal_expl.style.format({"Base": "{:,.2f}", "Montant": "{:,.2f}"}),
+                    use_container_width=True, hide_index=True
+                )
 
-        # Section 9 - Net final
-        st.markdown("### 9. Le Net Final")
-        st.markdown(f"""
+            # Section 9 - Net final
+            st.markdown("### 9. Le Net Final")
+            st.markdown(f"""
 **NET AVANT IMPOT = BRUT - CHARGES SALARIALES**
 
 = {results['gross_salary']:,.2f} - {results['employee_charges']:,.2f} = **{results['net_before_tax']:,.2f} EUR**
         """)
 
-        st.success(f"""
+            st.success(f"""
 **NET A PAYER = NET AVANT IMPOT + FRAIS REMBOURSES**
 
 = {results['net_before_tax']:,.2f} + {results['total_frais_rembourses']:,.2f} = **{results['net_payable']:,.2f} EUR**
         """)
 
-    with c_mail:
-        st.header("Email type pour le consultant")
-        st.markdown("Copiez ce texte pour accompagner l'envoi du PDF (Donnees 2026).")
+        with c_mail:
+            st.header("Email type pour le consultant")
+            st.markdown("Copiez ce texte pour accompagner l'envoi du PDF (Donnees 2026).")
 
-        # Texte temps de travail
-        txt_temps = "Mission temps plein" if days_worked_week >= 5 else f"Mission temps partiel ({days_worked_week}j/sem)"
+            # Texte temps de travail
+            txt_temps = "Mission temps plein" if days_worked_week >= 5 else f"Mission temps partiel ({days_worked_week}j/sem)"
 
-        # Frais de gestion + partages
-        txt_gestion = f"Nos frais de gestion de {st.session_state.cfg_frais_gestion}%"
-        if frais_partages_pct > 0:
-            txt_gestion += f" + frais partagés de {frais_partages_pct}%"
-        if results['charges_sps'] > 0:
-            txt_gestion += f" + charges S+PS de {taux_charges_sps:.4f}% ({results['charges_sps']:,.2f} EUR)"
+            # Frais de gestion + partages
+            txt_gestion = f"Nos frais de gestion de {st.session_state.cfg_frais_gestion}%"
+            if frais_partages_pct > 0:
+                txt_gestion += f" + frais partagés de {frais_partages_pct}%"
+            if results['charges_sps'] > 0:
+                txt_gestion += f" + charges S+PS de {taux_charges_sps:.4f}% ({results['charges_sps']:,.2f} EUR)"
 
-        # CP
-        txt_cp = "Versement de l'indemnité congés payés tous les mois"
-        if provision_cp:
-            txt_cp = "Provisionnement de l'indemnité congés payés"
+            # CP
+            txt_cp = "Versement de l'indemnité congés payés tous les mois"
+            if provision_cp:
+                txt_cp = "Provisionnement de l'indemnité congés payés"
 
-        # TR
-        txt_tr_mail = ""
-        if results['nb_titres_restaurant'] > 0:
-            txt_tr_mail = f"\n- Avec les Tickets restaurants ({results['nb_titres_restaurant']} titres)"
+            # TR
+            txt_tr_mail = ""
+            if results['nb_titres_restaurant'] > 0:
+                txt_tr_mail = f"\n- Avec les Tickets restaurants ({results['nb_titres_restaurant']} titres)"
 
-        # Frais
-        txt_frais_mail = ""
-        if results['total_frais_rembourses'] > 0:
-            details = []
-            if results['ik_amount'] > 0:
-                details.append(f"IK : {results['ik_amount']:,.2f} EUR")
-            if results['igd_amount'] > 0:
-                details.append(f"IGD : {results['igd_amount']:,.2f} EUR")
-            if results.get('forfait_teletravail', 0) > 0:
-                details.append(f"Télétravail : {results['forfait_teletravail']:,.2f} EUR")
-            if results['other_expenses'] > 0:
-                details.append(f"Autres : {results['other_expenses']:,.2f} EUR")
-            txt_frais_mail = f"\n- J'ai intégré {results['total_frais_rembourses']:,.2f} EUR de frais mensuels ({', '.join(details)})"
+            # Frais
+            txt_frais_mail = ""
+            if results['total_frais_rembourses'] > 0:
+                details = []
+                if results['ik_amount'] > 0:
+                    details.append(f"IK : {results['ik_amount']:,.2f} EUR")
+                if results['igd_amount'] > 0:
+                    details.append(f"IGD : {results['igd_amount']:,.2f} EUR")
+                if results.get('forfait_teletravail', 0) > 0:
+                    details.append(f"Télétravail : {results['forfait_teletravail']:,.2f} EUR")
+                if results['other_expenses'] > 0:
+                    details.append(f"Autres : {results['other_expenses']:,.2f} EUR")
+                txt_frais_mail = f"\n- J'ai intégré {results['total_frais_rembourses']:,.2f} EUR de frais mensuels ({', '.join(details)})"
 
-        # Reserve
-        txt_reserve_mail = ""
-        label_res = results['label_reserve']
-        if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
-            txt_reserve_mail = f"\n\nÀ noter que la {label_res}* de {results['provision_reserve_financiere']:,.2f} EUR sera provisionnée tous les mois (montant chargé).\n\n(*) {label_res} : {texte_reserve(results['type_contrat'])}"
+            # Reserve
+            txt_reserve_mail = ""
+            label_res = results['label_reserve']
+            if not results['reserve_reintegree'] and results['provision_reserve_financiere'] > 0:
+                txt_reserve_mail = f"\n\nÀ noter que la {label_res}* de {results['provision_reserve_financiere']:,.2f} EUR sera provisionnée tous les mois (montant chargé).\n\n(*) {label_res} : {texte_reserve(results['type_contrat'])}"
 
-        # Mutuelle
-        txt_mutuelle_mail = ""
-        if use_mutuelle:
-            txt_mutuelle_mail = "\nVous trouverez également en pièce jointe le dossier relatif à la mutuelle proposée, prise en charge à 50% dans la simulation présentée."
+            # Mutuelle
+            txt_mutuelle_mail = ""
+            if use_mutuelle:
+                txt_mutuelle_mail = "\nVous trouverez également en pièce jointe le dossier relatif à la mutuelle proposée, prise en charge à 50% dans la simulation présentée."
 
-        # Signature (depuis le contact selectionne)
-        _c = signataire
-        _sig_tel = _c['phone'] + (f" · Mob. {_c['mobile']}" if _c['mobile'] else "")
-        signature = "\n".join(l for l in (_c['name'], _c['title'], "Signe+ Portage Salarial", f"Tél. {_sig_tel}", _c['email']) if l)
+            # Signature (depuis le contact selectionne)
+            _c = signataire
+            _sig_tel = _c['phone'] + (f" · Mob. {_c['mobile']}" if _c['mobile'] else "")
+            signature = "\n".join(l for l in (_c['name'], _c['title'], "Signe+ Portage Salarial", f"Tél. {_sig_tel}", _c['email']) if l)
 
-        email_content = f"""Objet : Votre simulation de revenus avec Signe+ portage salarial
+            email_content = f"""Objet : Votre simulation de revenus avec Signe+ portage salarial
 
 Bonjour {consultant_name},
 
@@ -1771,4 +1963,79 @@ Bien cordialement,
 
 {signature}"""
 
-        st.text_area("Sujet & Corps du message", email_content, height=600)
+            st.text_area("Sujet & Corps du message", email_content, height=600)
+
+
+# Navigation native : le profil possède son URL et conserve la simulation en session.
+signataire = contact_signataire(st.user.get("email") or st.user.get("preferred_username"),
+                                st.user.get("name", ""), st.user.get("oid", ""))
+page_simulation = st.Page(afficher_simulateur, title="Simulateur", default=True)
+page_profil = st.Page(afficher_profil, title="Mon profil", url_path="profil")
+page = st.navigation([page_simulation, page_profil], position="hidden")
+if st.session_state.pop("_retour_simulateur", False):
+    st.switch_page(page_simulation)
+
+st.markdown("""
+<style>
+[data-testid="stMainBlockContainer"] { padding-top: 3.5rem; }
+.st-key-entete_application { padding-bottom: 1.2rem; margin-bottom: 1rem; border-bottom: 1px solid #e6eaf0; }
+.st-key-ouvrir_profil { max-width: 340px; margin-left: auto; }
+.st-key-ouvrir_profil button {
+    min-height: 58px; border: 1px solid #dce3ed; border-radius: 14px;
+    background: #f6f8fc; color: #061535; padding: 12px 20px;
+}
+.st-key-ouvrir_profil button:hover { background: #edf2f9; border-color: #7ba3c6; color: #061535; }
+.st-key-ouvrir_profil button p { font-weight: 600; }
+.st-key-ouvrir_profil [data-testid="stIconMaterial"] { font-size: 28px; }
+.st-key-ouvrir_profil button:focus-visible, .st-key-page_profil button:focus-visible {
+    outline: 3px solid #7ba3c6; outline-offset: 3px;
+}
+.st-key-page_profil { max-width: 1160px; margin: 0 auto; }
+.st-key-page_profil h1 { color: #061535; font-size: 2rem; letter-spacing: -.035em; }
+.st-key-identite_profil, .st-key-dossiers_personnels {
+    border: 1px solid #e2e7ef; border-radius: 18px; padding: 24px; background: #fff;
+}
+.profil-identite { display: flex; align-items: center; gap: 14px; padding-bottom: 24px; border-bottom: 1px solid #edf0f5; }
+.profil-avatar {
+    display: grid; place-items: center; flex: 0 0 58px; height: 58px;
+    border-radius: 18px; background: #eaf0f8; color: #18385c; font-weight: 600; font-size: 20px;
+}
+.profil-identite h2 { margin: 0; padding: 0; font-size: 20px; line-height: 1.3; color: #061535; overflow-wrap: anywhere; }
+.profil-identite p { margin: 5px 0 0; color: #647086; font-size: 13px; line-height: 1.5; }
+.profil-coordonnees { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 16px; margin: 4px 0 12px; }
+.profil-large { grid-column: 1 / -1; }
+.profil-coordonnees dt { color: #6a7587; font-size: 12px; margin: 0 0 5px; font-weight: 400; }
+.profil-coordonnees dd { color: #26344b; font-size: 14px; line-height: 1.5; margin: 0; overflow-wrap: anywhere; }
+.st-key-dossiers_personnels h3 { color: #061535; font-size: 20px; letter-spacing: -.02em; }
+.st-key-dossiers_personnels button { border-radius: 10px; border-color: #dbe2ec; color: #18385c; font-size: 13px; }
+[class*="st-key-dossier_ligne_"] { padding: 20px 0; border-top: 1px solid #edf0f5; }
+.dossier-resume { position: relative; padding-left: 15px; border-left: 3px solid #d7e3f1; }
+.dossier-statut { color: #31705c; background: #eff7f3; border-radius: 6px; font-size: 11px; padding: 3px 7px; }
+.dossier-resume h3 { margin: 10px 0 4px; padding: 0; font-size: 17px !important; overflow-wrap: anywhere; }
+.dossier-resume p { color: #6a7587; font-size: 12px; margin: 0; }
+.dossiers-vides { text-align: center; padding: 40px 16px; }
+.dossiers-vides > span { display: inline-grid; place-items: center; width: 48px; height: 48px; border-radius: 14px; background: #f0f4f9; color: #617b9e; font-size: 28px; }
+.dossiers-vides h3 { margin: 18px 0 10px; }
+.dossiers-vides p { color: #6a7587; font-size: 14px; line-height: 1.7; }
+.st-key-actions_simulation { background: #f6f8fc; border-radius: 14px; padding: 16px 20px; }
+.st-key-actions_simulation button { border-radius: 10px; }
+.st-key-telecharger_pdf button { background: #061535; border-color: #061535; color: #fff; }
+.st-key-telecharger_pdf button:hover:enabled { background: #18385c; border-color: #18385c; color: #fff; }
+.st-key-telecharger_pdf button:disabled { opacity: .4; }
+@media (max-width: 640px) {
+    [data-testid="stMainBlockContainer"] { padding-top: 3rem; }
+    .st-key-identite_profil, .st-key-dossiers_personnels { padding: 20px; }
+    .st-key-entete_application { margin-bottom: 0; }
+    .st-key-page_profil h1 { font-size: 1.8rem; }
+}
+</style>
+""", unsafe_allow_html=True)
+with st.container(key="entete_application"):
+    marque, compte = st.columns([3, 2], vertical_alignment="center")
+    with marque:
+        st.image(os.path.join(os.path.dirname(os.path.abspath(__file__)), "logo S+ PS horizontal bleu 1 (1).svg"), width=150)
+    with compte:
+        if st.button(f"{signataire['name']} · Mon profil", icon=":material/account_circle:",
+                     key="ouvrir_profil", use_container_width=True):
+            st.switch_page(page_profil)
+page.run()

@@ -1,0 +1,15 @@
+services:
+  simulateur:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      DOSSIERS_DB_PATH: /data/dossiers.sqlite3
+    volumes:
+      - dossiers:/data
+      - ./.streamlit/secrets.toml:/app/.streamlit/secrets.toml:ro
+
+volumes:
+  dossiers:
+    name: simulateur-portage-dossiers
